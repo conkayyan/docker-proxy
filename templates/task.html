@@ -63,7 +63,10 @@
 
     function tick() {
       fetch('{{ url_for("task_status", task_id=task.id) }}')
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          if (r.status === 401) { window.location = '{{ url_for("login") }}'; return null; }
+          return r.json();
+        })
         .then(function (d) {
           if (!d || d.error) return;
           setBadge(d.status);
@@ -75,17 +78,19 @@
             errBlock.hidden = false;
             errBlock.querySelector('pre').textContent = d.error;
           }
-          if (d.status === 'success' || d.status === 'failed') {
-            logPre.scrollTop = logPre.scrollHeight;
-            return;
-          }
-          setTimeout(tick, 2000);
+          logPre.scrollTop = logPre.scrollHeight;
+          // 仍活跃：2s 节奏；终态：降频到 10s，继续感知后续变化
+          var active = d.status === 'pending' || d.status === 'running';
+          setTimeout(tick, active ? 2000 : 10000);
         })
         .catch(function () { setTimeout(tick, 5000); });
     }
 
     if (status !== 'success' && status !== 'failed') {
       setTimeout(tick, 500);
+    } else {
+      // 即使初始就是终态也起一次慢轮询，保持页面新鲜
+      setTimeout(tick, 2000);
     }
     logPre.scrollTop = logPre.scrollHeight;
   })();

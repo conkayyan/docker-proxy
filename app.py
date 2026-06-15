@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import threading
 from datetime import datetime
+from functools import wraps
 from queue import Queue
 
 import requests
@@ -446,6 +447,18 @@ def load_user(user_id: str):
         return None
 
 
+def api_login_required(fn):
+    """API 鉴权装饰器：未登录返回 401 JSON（不要 302 跳 HTML 登录页）。"""
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not current_user.is_authenticated:
+            return jsonify({"error": "unauthorized"}), 401
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
@@ -768,7 +781,7 @@ def task_delete(task_id: int):
 
 
 @app.route("/api/tasks/<int:task_id>")
-@login_required
+@api_login_required
 def task_status(task_id: int):
     task = db.session.get(CopyTask, task_id)
     if task is None or task.user_id != current_user.id:
@@ -783,6 +796,40 @@ def task_status(task_id: int):
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "command": task.command,
+        }
+    )
+
+
+@app.route("/api/tasks/recent")
+@api_login_required
+def tasks_recent():
+    """供仪表盘轮询：返回当前用户最近的任务列表（按状态变化驱动 DOM 更新）。"""
+    try:
+        limit = max(1, min(int(request.args.get("limit", 10)), 50))
+    except ValueError:
+        limit = 10
+    tasks = (
+        CopyTask.query.filter_by(user_id=current_user.id)
+        .order_by(CopyTask.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return jsonify(
+        {
+            "tasks": [
+                {
+                    "id": t.id,
+                    "status": t.status,
+                    "source_image": t.source_image,
+                    "dest_image": t.dest_image,
+                    "registry_url": t.registry.url,
+                    "project_dest": _project_dest(t.dest_image),
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "started_at": t.started_at.isoformat() if t.started_at else None,
+                    "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+                }
+                for t in tasks
+            ]
         }
     )
 

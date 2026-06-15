@@ -69,14 +69,14 @@
         <th></th>
       </tr>
     </thead>
-    <tbody>
+    <tbody id="recent-tasks">
       {% for t in tasks %}
-      <tr>
+      <tr data-task-id="{{ t.id }}" data-status="{{ t.status }}">
         <td>#{{ t.id }}</td>
-        <td><span class="badge badge-{{ t.status }}">{{ t.status }}</span></td>
-        <td class="mono">{{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image) }}</td>
-        <td>{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-        <td class="row-actions">
+        <td><span class="badge badge-{{ t.status }} badge-status">{{ t.status }}</span></td>
+        <td class="mono cell-image">{{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image) }}</td>
+        <td class="cell-created">{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td class="row-actions cell-actions">
           <a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">查看</a>
           {% if t.status not in ('pending', 'running') %}
           <form method="post" action="{{ url_for('task_delete', task_id=t.id) }}" onsubmit="return confirm('确认删除任务 #{{ t.id }} 的记录？');" style="display:inline;">
@@ -92,4 +92,96 @@
     <p class="hint">暂无任务。</p>
   {% endif %}
 </div>
+
+<script>
+  // 自动刷新最近任务表：任何任务非终态时每 2s 拉一次，否则降频到 10s
+  (function () {
+    var tbody = document.getElementById('recent-tasks');
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr[data-task-id]'));
+    if (!rows.length) return;
+    var knownIds = rows.map(function (r) { return r.dataset.taskId; });
+
+    function fmt(dt) {
+      if (!dt) return '';
+      return dt.replace('T', ' ').split('.')[0];
+    }
+
+    function ensureDeleteForm(row, id) {
+      if (row.querySelector('.cell-actions form')) return;
+      var form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/tasks/' + id + '/delete';
+      form.onsubmit = function () { return confirm('确认删除任务 #' + id + ' 的记录？'); };
+      form.style.display = 'inline';
+      form.innerHTML = '<button type="submit" class="btn small danger">删除</button>';
+      row.querySelector('.cell-actions').appendChild(form);
+    }
+
+    function removeDeleteForm(row) {
+      var f = row.querySelector('.cell-actions form');
+      if (f) f.remove();
+    }
+
+    function tick() {
+      fetch('{{ url_for("tasks_recent") }}?limit=10')
+        .then(function (r) {
+          if (r.status === 401) { window.location = '{{ url_for("login") }}'; return null; }
+          return r.json();
+        })
+        .then(function (data) {
+          if (!data || !data.tasks) return;
+          var byId = {};
+          data.tasks.forEach(function (t) { byId[t.id] = t; });
+          var anyActive = false;
+
+          rows.forEach(function (row) {
+            var id = row.dataset.taskId;
+            var t = byId[id];
+            if (!t) {
+              // 任务已被删除/不再属于当前用户：从 DOM 移除该行
+              row.parentNode.removeChild(row);
+              return;
+            }
+            // 状态徽章
+            var badge = row.querySelector('.badge-status');
+            if (badge) {
+              badge.textContent = t.status;
+              badge.className = 'badge badge-' + t.status + ' badge-status';
+            }
+            // 整行的 pulse 高亮
+            if (t.status === 'pending' || t.status === 'running') {
+              row.classList.add('pulse');
+              anyActive = true;
+            } else {
+              row.classList.remove('pulse');
+            }
+            // 删除按钮：终态显示，非终态移除
+            if (t.status === 'pending' || t.status === 'running') {
+              removeDeleteForm(row);
+            } else {
+              ensureDeleteForm(row, id);
+            }
+            // 创建时间
+            var createdCell = row.querySelector('.cell-created');
+            if (createdCell && t.created_at) createdCell.textContent = fmt(t.created_at);
+            // 镜像路径
+            var imgCell = row.querySelector('.cell-image');
+            if (imgCell) imgCell.textContent = t.source_image + ' → ' + t.registry_url + '/' + t.project_dest;
+          });
+
+          // 自适应轮询节奏
+          setTimeout(tick, anyActive ? 2000 : 10000);
+        })
+        .catch(function () { setTimeout(tick, 5000); });
+    }
+
+    // 第一次启动时如有活跃任务，立即拉一次
+    var initiallyActive = rows.some(function (r) {
+      var s = r.dataset.status;
+      return s === 'pending' || s === 'running';
+    });
+    setTimeout(tick, initiallyActive ? 500 : 3000);
+  })();
+</script>
 {% endblock %}

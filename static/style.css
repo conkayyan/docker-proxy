@@ -242,3 +242,13 @@ details summary {
 }
 .tag-list form { display: inline; }
 .tag-list code { word-break: break-all; }
+
+/* 正在运行/排队的任务行：轻微脉动高亮，便于一眼看出在跑的任务 */
+tr.pulse {
+  animation: row-pulse 1.6s ease-in-out infinite;
+}
+@keyframes row-pulse {
+  0%, 100% { background-color: transparent; }
+  50%      { background-color: rgba(37, 99, 235, 0.08); }
+}
+tr.pulse:hover td { background-color: rgba(37, 99, 235, 0.05); }
