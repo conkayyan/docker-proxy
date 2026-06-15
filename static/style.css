@@ -145,6 +145,7 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.95rem;
   font-family: inherit;
   text-decoration: none;
+  white-space: nowrap;
 }
 .btn:hover { background: #f3f4f6; text-decoration: none; }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
@@ -160,6 +161,13 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
 }
 .row-actions form { display: inline; margin: 0; }
+
+/* 表格里的多按钮操作列：上下排列（卡片头里的 .row-actions 仍保持左右排列） */
+td.row-actions {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+}
 
 table.data {
   width: 100%;

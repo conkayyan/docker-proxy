@@ -36,7 +36,7 @@
         </td>
         <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions">
-          <a class="btn small" href="{{ url_for('registry_catalog', rid=r.id) }}">查看镜像</a>
+          <a class="btn small" href="{{ url_for('registry_catalog', rid=r.id) }}">镜像</a>
           <a class="btn small" href="{{ url_for('registries_edit', rid=r.id) }}">编辑</a>
           <form method="post" action="{{ url_for('registries_delete', rid=r.id) }}" onsubmit="return confirm('确定删除该 Registry 配置？');">
             <button type="submit" class="btn small danger">删除</button>
