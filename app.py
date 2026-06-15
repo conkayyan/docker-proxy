@@ -1001,8 +1001,8 @@ def task_delete(task_id: int):
     db.session.commit()
     flash(f"任务 #{task_id} 已删除", "success")
 
-    # 如果来源页是任务详情，回到 dashboard；否则回 dashboard
-    return redirect(request.referrer or url_for("dashboard"))
+    # 任务已删，回详情页会触发「任务不存在」——统一回 dashboard
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/api/tasks/<int:task_id>")
