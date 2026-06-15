@@ -252,3 +252,19 @@ tr.pulse {
   50%      { background-color: rgba(37, 99, 235, 0.08); }
 }
 tr.pulse:hover td { background-color: rgba(37, 99, 235, 0.05); }
+
+/* 任务详情页：实时轮询指示器 */
+.live-dot {
+  display: inline-block;
+  margin-left: .4rem;
+  color: #16a34a;
+  font-size: 0.7em;
+  vertical-align: middle;
+  animation: live-pulse 1.5s ease-in-out infinite;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 1; }
+}

@@ -3,21 +3,28 @@
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span></h1>
+    <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span>
+      <span id="live-dot" class="live-dot" title="正在轮询">●</span>
+    </h1>
     <div class="row-actions">
+      <small id="last-polled" class="hint">—</small>
       <a class="btn small" href="{{ url_for('dashboard') }}">返回</a>
-      {% if task.status in ('success', 'failed') %}
-      <form method="post" action="{{ url_for('task_retry', task_id=task.id) }}" style="display:inline;">
+      {% if task.status == 'failed' %}
+      <form id="retry-form" method="post" action="{{ url_for('task_retry', task_id=task.id) }}" style="display:inline;">
         <button type="submit" class="btn small primary">重试</button>
       </form>
       {% endif %}
       {% if task.status not in ('pending', 'running') %}
-      <form method="post" action="{{ url_for('task_delete', task_id=task.id) }}" onsubmit="return confirm('确认删除任务 #{{ task.id }} 的记录？');" style="display:inline;">
+      <form id="delete-form" method="post" action="{{ url_for('task_delete', task_id=task.id) }}" onsubmit="return confirm('确认删除任务 #{{ task.id }} 的记录？');" style="display:inline;">
         <button type="submit" class="btn small danger">删除</button>
       </form>
       {% endif %}
     </div>
   </div>
+
+  {% if task.status == 'pending' %}
+  <div class="alert alert-info">⏳ 任务已加入队列，等待 worker 拾起…</div>
+  {% endif %}
 
   <dl class="kv">
     <dt>源镜像</dt><dd class="mono">{{ task.source_image }}</dd>
@@ -31,7 +38,7 @@
 
   <details open>
     <summary>命令</summary>
-    <pre class="log mono">{{ task.command or '(尚未生成)' }}</pre>
+    <pre class="log mono" id="command-pre">{{ display_command }}</pre>
   </details>
 
   <details open>
@@ -46,23 +53,38 @@
 </div>
 
 <script>
-  // 简易轮询：状态非终态时每 2s 拉一次
+  // 自适应轮询 + 可见的「最近刷新」指示器
   (function () {
     var status = {{ task.status | tojson }};
     var badge = document.getElementById('status-badge');
     var logPre = document.getElementById('log-pre');
+    var commandPre = document.getElementById('command-pre');
     var startedTd = document.getElementById('started-at');
     var finishedTd = document.getElementById('finished-at');
     var rcTd = document.getElementById('return-code');
     var errBlock = document.getElementById('error-block');
+    var lastPolled = document.getElementById('last-polled');
+    var liveDot = document.getElementById('live-dot');
+    var retryForm = document.getElementById('retry-form');
+    var deleteForm = document.getElementById('delete-form');
 
     function setBadge(s) {
       badge.textContent = s;
       badge.className = 'badge badge-' + s;
     }
 
+    function fmtTime(d) {
+      return d.toTimeString().slice(0, 8);
+    }
+
+    function markPolled() {
+      lastPolled.textContent = '刷新于 ' + fmtTime(new Date());
+      if (liveDot) liveDot.style.opacity = '1';
+    }
+
     function tick() {
-      fetch('{{ url_for("task_status", task_id=task.id) }}')
+      markPolled();
+      fetch('{{ url_for("task_status", task_id=task.id) }}', { cache: 'no-store' })
         .then(function (r) {
           if (r.status === 401) { window.location = '{{ url_for("login") }}'; return null; }
           return r.json();
@@ -70,6 +92,7 @@
         .then(function (d) {
           if (!d || d.error) return;
           setBadge(d.status);
+          if (d.command) commandPre.textContent = d.command;
           if (d.log) logPre.textContent = d.log;
           if (d.started_at) startedTd.textContent = d.started_at.replace('T', ' ').split('.')[0];
           if (d.finished_at) finishedTd.textContent = d.finished_at.replace('T', ' ').split('.')[0];
@@ -78,20 +101,19 @@
             errBlock.hidden = false;
             errBlock.querySelector('pre').textContent = d.error;
           }
+          // 任务成功：隐藏重试；任务失败：显示重试；活跃状态：两个表单都隐藏
+          if (retryForm) retryForm.style.display = (d.status === 'failed') ? 'inline' : 'none';
+          if (deleteForm) deleteForm.style.display = (d.status === 'pending' || d.status === 'running') ? 'none' : 'inline';
           logPre.scrollTop = logPre.scrollHeight;
-          // 仍活跃：2s 节奏；终态：降频到 10s，继续感知后续变化
+          // 活跃 2s，终态 10s
           var active = d.status === 'pending' || d.status === 'running';
           setTimeout(tick, active ? 2000 : 10000);
         })
         .catch(function () { setTimeout(tick, 5000); });
     }
 
-    if (status !== 'success' && status !== 'failed') {
-      setTimeout(tick, 500);
-    } else {
-      // 即使初始就是终态也起一次慢轮询，保持页面新鲜
-      setTimeout(tick, 2000);
-    }
+    // 立即起一次轮询（不管初始状态），活跃状态每 2s，终态每 10s
+    setTimeout(tick, 200);
     logPre.scrollTop = logPre.scrollHeight;
   })();
 </script>

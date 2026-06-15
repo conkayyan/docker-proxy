@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime
 from functools import wraps
 from queue import Queue
@@ -21,6 +23,7 @@ from flask import (
     Flask,
     flash,
     jsonify,
+    make_response,
     redirect,
     render_template,
     request,
@@ -139,7 +142,6 @@ class CopyTask(db.Model):
     status = db.Column(db.String(20), default="pending", nullable=False)
     log = db.Column(db.Text, default="", nullable=False)
     error = db.Column(db.Text, default="", nullable=False)
-    command = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
     multi_arch = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -248,6 +250,59 @@ def _build_command(task: CopyTask) -> list[str]:
     cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
     cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
     return cmd
+
+
+def _display_command(task: CopyTask) -> str:
+    """为 UI 拼接展示用的命令字符串（密码已掩码）。
+
+    始终基于 task 的结构化字段（source_image / dest_image / multi_arch / registry）
+    重新生成，不读 DB 也不缓存。任务还没启动时返回 "(尚未生成)"。
+    """
+    if task.status == "pending":
+        return "(尚未生成)"
+    if task.registry is None:
+        return "(registry 已被删除，无法重建命令)"
+    return _mask_command_str(_build_command(task))
+
+
+# 这些 token 后面接的下一个参数是凭证，保存到 DB / 展示时必须掩盖
+_CRED_FLAGS = {"--dest-creds", "--src-creds", "--creds"}
+_MASK = "********"
+
+
+def _mask_command_str(cmd_list: list[str]) -> str:
+    """把命令行 list 转成展示用字符串；遇到 --creds 之类的 flag，下一参数里的
+    user:password 形式仅把 password 部分替换为 ********，用户名保留。
+
+    子进程实际调用仍用原始 list（含真实密码），这只影响存到 DB 的 command 字段。
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in cmd_list:
+        if skip_next:
+            if ":" in token:
+                user, _, _ = token.partition(":")
+                out.append(f"{user}:{_MASK}")
+            else:
+                out.append(_MASK)
+            skip_next = False
+            continue
+        if token in _CRED_FLAGS:
+            out.append(token)
+            skip_next = True
+        else:
+            out.append(token)
+    return " ".join(out)
+
+
+_LOG_CREDS_RE = re.compile(r"(https?://[^/\s:@]+):[^@\s]+@")
+
+
+def _mask_log_str(s: str) -> str:
+    """掩盖日志里 URL 中嵌入的 user:pass 形式凭证，例如 https://u:p@host → https://u:********@host"""
+    if not s:
+        return s
+    return _LOG_CREDS_RE.sub(rf"\1:{_MASK}@", s)
 
 
 def _project_dest(dest_image: str, project: str = "") -> str:
@@ -373,7 +428,7 @@ def delete_all_tags(registry: Registry, repo: str) -> tuple[int, int, list[str]]
         if success:
             ok += 1
         else:
-            errors.append(f"{repo}:{tag} → {output}")
+            errors.append(f"{repo}:{tag} → {_mask_log_str(output)}")
     return ok, len(tags) - ok, errors
 
 
@@ -388,7 +443,8 @@ def _run_task(task_id: int) -> None:
         db.session.commit()
 
         cmd = _build_command(task)
-        task.command = " ".join(cmd)
+        # 子进程实际调用用原始 cmd（包含真实密码，仅在内存中传给 skopeo）。
+        # 不再存 task.command 到 DB；UI 上要展示时由 _display_command() 重新拼接 + 掩码。
         db.session.commit()
 
         if shutil.which("skopeo") is None:
@@ -416,15 +472,18 @@ def _run_task(task_id: int) -> None:
 
         try:
             assert proc.stdout is not None
+            last_flush = 0.0
             for line in proc.stdout:
                 log_lines.append(line.rstrip())
-                # 每 20 行落库一次，避免 IO 过频
-                if len(log_lines) % 20 == 0:
-                    task.log = "\n".join(log_lines)
+                # 每 5 行 或 每 1.5 秒（取较快者）落库一次，让前端轮询能及时看到
+                now = time.monotonic()
+                if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
+                    task.log = _mask_log_str("\n".join(log_lines))
                     db.session.commit()
+                    last_flush = now
             proc.wait()
             task.return_code = proc.returncode
-            task.log = "\n".join(log_lines)
+            task.log = _mask_log_str("\n".join(log_lines))
             task.finished_at = datetime.utcnow()
             if proc.returncode == 0:
                 task.status = "success"
@@ -753,7 +812,13 @@ def task_detail(task_id: int):
     if task is None or task.user_id != current_user.id:
         flash("任务不存在", "error")
         return redirect(url_for("dashboard"))
-    return render_template("task.html", task=task)
+    response = make_response(render_template(
+        "task.html",
+        task=task,
+        display_command=_display_command(task),
+    ))
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
 
 
 @app.route("/tasks/<int:task_id>/retry", methods=["POST"])
@@ -771,10 +836,10 @@ def task_retry(task_id: int):
         return redirect(url_for("task_detail", task_id=task.id))
 
     # 重置后重新入队；保留 created_at 以便追溯首次提交时间
+    # 命令不在 DB 中——worker 会从结构化字段重新 _build_command()
     task.status = "pending"
     task.log = ""
     task.error = ""
-    task.command = ""
     task.return_code = None
     task.started_at = None
     task.finished_at = None
@@ -810,8 +875,10 @@ def task_delete(task_id: int):
 def task_status(task_id: int):
     task = db.session.get(CopyTask, task_id)
     if task is None or task.user_id != current_user.id:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(
+        resp = jsonify({"error": "not found"})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 404
+    resp = jsonify(
         {
             "id": task.id,
             "status": task.status,
@@ -820,9 +887,11 @@ def task_status(task_id: int):
             "return_code": task.return_code,
             "started_at": task.started_at.isoformat() if task.started_at else None,
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
-            "command": task.command,
+            "command": _display_command(task),
         }
     )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/tasks/recent")
@@ -839,25 +908,29 @@ def tasks_recent():
         .limit(limit)
         .all()
     )
-    return jsonify(
-        {
-            "tasks": [
-                {
-                    "id": t.id,
-                    "status": t.status,
-                    "source_image": t.source_image,
-                    "dest_image": t.dest_image,
-                    "registry_url": t.registry.url,
-                    "registry_project": t.registry.project,
-                    "project_dest": _project_dest(t.dest_image, t.registry.project),
-                    "created_at": t.created_at.isoformat() if t.created_at else None,
-                    "started_at": t.started_at.isoformat() if t.started_at else None,
-                    "finished_at": t.finished_at.isoformat() if t.finished_at else None,
-                }
-                for t in tasks
-            ]
-        }
+    resp = make_response(
+        jsonify(
+            {
+                "tasks": [
+                    {
+                        "id": t.id,
+                        "status": t.status,
+                        "source_image": t.source_image,
+                        "dest_image": t.dest_image,
+                        "registry_url": t.registry.url,
+                        "registry_project": t.registry.project,
+                        "project_dest": _project_dest(t.dest_image, t.registry.project),
+                        "created_at": t.created_at.isoformat() if t.created_at else None,
+                        "started_at": t.started_at.isoformat() if t.started_at else None,
+                        "finished_at": t.finished_at.isoformat() if t.finished_at else None,
+                    }
+                    for t in tasks
+                ]
+            }
+        )
     )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 # ---------------------------------------------------------------------------
