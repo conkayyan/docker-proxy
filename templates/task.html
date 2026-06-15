@@ -4,7 +4,7 @@
 <div class="card">
   <div class="card-head">
     <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span>
-      <span id="live-dot" class="live-dot" title="正在轮询">●</span>
+      {% if task.status == 'running' %}<span id="live-dot" class="live-dot" title="正在轮询">●</span>{% endif %}
     </h1>
     <div class="row-actions">
       <small id="last-polled" class="hint">—</small>
@@ -104,6 +104,21 @@
           // 任务成功：隐藏重试；任务失败：显示重试；活跃状态：两个表单都隐藏
           if (retryForm) retryForm.style.display = (d.status === 'failed') ? 'inline' : 'none';
           if (deleteForm) deleteForm.style.display = (d.status === 'pending' || d.status === 'running') ? 'none' : 'inline';
+          // 绿色脉动圆点：仅 running 时显示（pending 排队中 / 终态都不显示）
+          var dot = document.getElementById('live-dot');
+          if (d.status === 'running') {
+            if (!dot) {
+              dot = document.createElement('span');
+              dot.id = 'live-dot';
+              dot.className = 'live-dot';
+              dot.title = '正在轮询';
+              dot.textContent = '●';
+              badge.insertAdjacentText('afterend', '');
+              badge.parentNode.insertBefore(dot, badge.nextSibling);
+            }
+          } else if (dot && dot.parentNode) {
+            dot.parentNode.removeChild(dot);
+          }
           logPre.scrollTop = logPre.scrollHeight;
           // 活跃 2s，终态 10s
           var active = d.status === 'pending' || d.status === 'running';
