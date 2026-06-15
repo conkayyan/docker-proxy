@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Registry 管理 · docker-proxy{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <h1>Registry 管理</h1>
+    <a class="btn primary" href="{{ url_for('registries_create') }}">+ 新增</a>
+  </div>
+
+  {% if items %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>名称</th>
+        <th>地址</th>
+        <th>用户名</th>
+        <th>insecure</th>
+        <th>创建时间</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr>
+        <td>{{ r.name }}</td>
+        <td class="mono">{{ r.url }}</td>
+        <td>{{ r.username }}</td>
+        <td>{{ '✓' if r.insecure else '' }}</td>
+        <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td class="row-actions">
+          <a class="btn small" href="{{ url_for('registries_edit', rid=r.id) }}">编辑</a>
+          <form method="post" action="{{ url_for('registries_delete', rid=r.id) }}" onsubmit="return confirm('确定删除？');">
+            <button type="submit" class="btn small danger">删除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="hint">还没有 Registry。</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}docker-proxy{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  {% if current_user.is_authenticated %}
+  <header class="topbar">
+    <div class="brand"><a href="{{ url_for('dashboard') }}">🐳 docker-proxy</a></div>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">镜像拷贝</a>
+      <a href="{{ url_for('registries_list') }}">Registry 管理</a>
+      <a href="{{ url_for('logout') }}">退出（{{ current_user.username }}）</a>
+    </nav>
+  </header>
+  {% endif %}
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+          {% for category, message in messages %}
+            <li class="flash flash-{{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="footer">
+    <small>&copy; {{ current_year }} docker-proxy · 本地工具</small>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}任务 #{{ task.id }} · docker-proxy{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-head">
+    <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span></h1>
+    <a class="btn small" href="{{ url_for('dashboard') }}">返回</a>
+  </div>
+
+  <dl class="kv">
+    <dt>源镜像</dt><dd class="mono">{{ task.source_image }}</dd>
+    <dt>目标</dt><dd class="mono">{{ task.registry.url }}/{{ task.dest_image }}</dd>
+    <dt>Registry</dt><dd>{{ task.registry.name }}（{{ task.registry.username }}）</dd>
+    <dt>创建</dt><dd>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</dd>
+    <dt>开始</dt><dd id="started-at">{% if task.started_at %}{{ task.started_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
+    <dt>结束</dt><dd id="finished-at">{% if task.finished_at %}{{ task.finished_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
+    <dt>退出码</dt><dd id="return-code">{{ task.return_code if task.return_code is not none else '' }}</dd>
+  </dl>
+
+  <details open>
+    <summary>命令</summary>
+    <pre class="log mono">{{ task.command or '(尚未生成)' }}</pre>
+  </details>
+
+  <details open>
+    <summary>日志</summary>
+    <pre class="log mono" id="log-pre">{{ task.log or '(暂无输出)' }}</pre>
+  </details>
+
+  <div id="error-block" {% if not task.error %}hidden{% endif %}>
+    <h3>错误</h3>
+    <pre class="log error mono">{{ task.error }}</pre>
+  </div>
+</div>
+
+<script>
+  // 简易轮询：状态非终态时每 2s 拉一次
+  (function () {
+    var status = {{ task.status | tojson }};
+    var badge = document.getElementById('status-badge');
+    var logPre = document.getElementById('log-pre');
+    var startedTd = document.getElementById('started-at');
+    var finishedTd = document.getElementById('finished-at');
+    var rcTd = document.getElementById('return-code');
+    var errBlock = document.getElementById('error-block');
+
+    function setBadge(s) {
+      badge.textContent = s;
+      badge.className = 'badge badge-' + s;
+    }
+
+    function tick() {
+      fetch('{{ url_for("task_status", task_id=task.id) }}')
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d || d.error) return;
+          setBadge(d.status);
+          if (d.log) logPre.textContent = d.log;
+          if (d.started_at) startedTd.textContent = d.started_at.replace('T', ' ').split('.')[0];
+          if (d.finished_at) finishedTd.textContent = d.finished_at.replace('T', ' ').split('.')[0];
+          if (d.return_code !== null && d.return_code !== undefined) rcTd.textContent = d.return_code;
+          if (d.error) {
+            errBlock.hidden = false;
+            errBlock.querySelector('pre').textContent = d.error;
+          }
+          if (d.status === 'success' || d.status === 'failed') {
+            logPre.scrollTop = logPre.scrollHeight;
+            return;
+          }
+          setTimeout(tick, 2000);
+        })
+        .catch(function () { setTimeout(tick, 5000); });
+    }
+
+    if (status !== 'success' && status !== 'failed') {
+      setTimeout(tick, 500);
+    }
+    logPre.scrollTop = logPre.scrollHeight;
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}镜像拷贝 · docker-proxy{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>镜像拷贝</h1>
+
+  {% if not skopeo_ok %}
+  <div class="alert alert-warn">
+    ⚠️ 未检测到 <code>skopeo</code> 命令，任务提交后会立即失败。
+    macOS 安装：<code>brew install skopeo</code>。
+  </div>
+  {% endif %}
+
+  {% if not registries %}
+  <div class="alert alert-info">
+    还没有目标 Registry —— <a href="{{ url_for('registries_create') }}">先添加一个</a>。
+  </div>
+  {% else %}
+  <form method="post" action="{{ url_for('copy_create') }}" class="form-grid">
+    <label class="full">
+      <span>目标 Registry</span>
+      <select name="registry_id" required>
+        {% for r in registries %}
+          <option value="{{ r.id }}">{{ r.name }} — {{ r.url }}{% if r.insecure %} (insecure){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <label>
+      <span>源镜像</span>
+      <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
+      <small>例如 <code>docker.io/library/nginx:1.27</code></small>
+    </label>
+
+    <label>
+      <span>目标镜像（不含 registry 地址）</span>
+      <input type="text" name="dest_image" required placeholder="library/nginx:1.27" />
+      <small>例如 <code>library/nginx:1.27</code>，将推送到 <code>{registry.url}/{dest_image}</code></small>
+    </label>
+
+    <div class="full">
+      <button type="submit" class="btn primary">开始拷贝</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>最近任务</h2>
+  {% if tasks %}
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>状态</th>
+        <th>源 → 目标</th>
+        <th>创建时间</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in tasks %}
+      <tr>
+        <td>#{{ t.id }}</td>
+        <td><span class="badge badge-{{ t.status }}">{{ t.status }}</span></td>
+        <td class="mono">{{ t.source_image }} → {{ t.registry.url }}/{{ t.dest_image }}</td>
+        <td>{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td><a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">查看</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="hint">暂无任务。</p>
+  {% endif %}
+</div>
+{% endblock %}
