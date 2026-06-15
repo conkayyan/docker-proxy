@@ -688,6 +688,24 @@ def admin_user_delete(uid: int):
     return redirect(url_for("admin_users"))
 
 
+@app.route("/admin/users/<int:uid>/toggle-admin", methods=["POST"])
+@admin_required
+def admin_user_toggle_admin(uid: int):
+    target = db.session.get(User, uid)
+    if target is None:
+        flash("用户不存在", "error")
+    elif target.id == current_user.id:
+        flash("不能修改自己的管理员身份", "error")
+    elif target.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
+        flash("不能取消最后一个管理员", "error")
+    else:
+        target.is_admin = not target.is_admin
+        db.session.commit()
+        state = "管理员" if target.is_admin else "普通用户"
+        flash(f"{target.username} 已设为 {state}", "success")
+    return redirect(url_for("admin_users"))
+
+
 # ---------------------------------------------------------------------------
 # 路由：Registry 管理
 # ---------------------------------------------------------------------------

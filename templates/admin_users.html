@@ -29,6 +29,13 @@
         <td class="row-actions" style="flex-direction:row; flex-wrap:wrap; gap:.4rem;">
           <a class="btn small" href="{{ url_for('admin_user_reset', uid=u.id) }}">重置密码</a>
           {% if u.id != current_user.id and not (u.is_admin and admin_count <= 1) %}
+          <form method="post" action="{{ url_for('admin_user_toggle_admin', uid=u.id) }}" onsubmit="return confirm('确认修改 {{ u.username }} 的管理员身份？');" style="display:inline;">
+            <button type="submit" class="btn small">
+              {% if u.is_admin %}取消管理员{% else %}设为管理员{% endif %}
+            </button>
+          </form>
+          {% endif %}
+          {% if u.id != current_user.id and not (u.is_admin and admin_count <= 1) %}
           <form method="post" action="{{ url_for('admin_user_delete', uid=u.id) }}" onsubmit="return confirm('确认删除用户 {{ u.username }} ？');" style="display:inline;">
             <button type="submit" class="btn small danger">删除</button>
           </form>
