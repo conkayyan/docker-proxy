@@ -61,6 +61,12 @@ def _load_or_create_fernet() -> Fernet:
     return Fernet(key)
 
 
+# 推送到目标 Registry 时强制追加的 project 路径前缀。
+# 例如目标镜像为 library/nginx:1.27 → 实际推送为 docker-proxy/library/nginx:1.27
+# 可通过环境变量 HARBOR_PROJECT 自定义；设为空字符串可关闭。
+HARBOR_PROJECT = os.environ.get("HARBOR_PROJECT", "docker-proxy").strip("/")
+
+
 FERNET = _load_or_create_fernet()
 
 
@@ -212,9 +218,24 @@ def _build_command(task: CopyTask) -> list[str]:
     if task.registry.insecure:
         cmd.append("--dest-tls-verify=false")
     cmd.append(f"docker://{task.source_image}")
-    cmd.append(f"docker://{task.registry.url}/{task.dest_image}")
+    cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image)}")
     cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
     return cmd
+
+
+def _project_dest(dest_image: str) -> str:
+    """返回带 project 前缀的目标路径。
+
+    - 自动去除用户输入首部的 `/`
+    - 若设置了 HARBOR_PROJECT 且 dest_image 尚未以它开头，自动追加
+    - 避免重复：用户输入 docker-proxy/library/nginx 不会再被前缀一次
+    """
+    dest = dest_image.lstrip("/")
+    if not HARBOR_PROJECT:
+        return dest
+    if dest == HARBOR_PROJECT or dest.startswith(f"{HARBOR_PROJECT}/"):
+        return dest
+    return f"{HARBOR_PROJECT}/{dest}"
 
 
 def _run_task(task_id: int) -> None:
@@ -524,7 +545,11 @@ def task_status(task_id: int):
 
 @app.context_processor
 def inject_globals():
-    return {"current_year": datetime.utcnow().year}
+    return {
+        "current_year": datetime.utcnow().year,
+        "harbor_project": HARBOR_PROJECT,
+        "project_dest": _project_dest,
+    }
 
 
 @app.errorhandler(404)

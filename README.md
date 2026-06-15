@@ -40,17 +40,22 @@ Web 表单字段 → 最终执行的 `skopeo` 命令：
 ```
 skopeo copy [--dest-tls-verify=false] \
   docker://<source_image> \
-  docker://<registry.url>/<dest_image> \
+  docker://<registry.url>/<HARBOR_PROJECT>/<dest_image> \
   --dest-creds <username>:<password>
 ```
 
-示例（来自需求）：
+目标路径会自动追加 project 前缀（默认 `docker-proxy`）。例如下方需求中的命令：
 
-```
-skopeo copy docker://docker.io/library/nginx:1.27 \
-  docker://harbor.company.local/library/nginx:1.27 \
-  --dest-creds admin:YourStrongPassword123
-```
+| 表单输入 | 实际执行 |
+| --- | --- |
+| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `library/nginx:1.27`<br>Registry: `harbor.company.local` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/library/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
+
+> **自定义 project**：通过环境变量修改默认前缀；设为空字符串可关闭自动追加。
+> ```bash
+> export HARBOR_PROJECT=my-team     # 推送路径变为 my-team/library/nginx:1.27
+> export HARBOR_PROJECT=            # 关闭自动前缀
+> ```
+> 如果目标镜像已以 `HARBOR_PROJECT/` 开头（例如用户复制时带上了），不会重复追加。
 
 ## 目录
 
