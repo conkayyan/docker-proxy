@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 instance/app.db
+instance/app.db.bak
 instance/secret.key
 .DS_Store
 .idea

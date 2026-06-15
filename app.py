@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -12,7 +13,9 @@ import threading
 from datetime import datetime
 from queue import Queue
 
+import requests
 from cryptography.fernet import Fernet
+from requests.auth import HTTPBasicAuth
 from flask import (
     Flask,
     flash,
@@ -238,6 +241,117 @@ def _project_dest(dest_image: str) -> str:
     return f"{HARBOR_PROJECT}/{dest}"
 
 
+# ---------------------------------------------------------------------------
+# Registry 浏览 / 删除辅助
+# ---------------------------------------------------------------------------
+
+
+def _skopeo_or_raise() -> None:
+    if shutil.which("skopeo") is None:
+        raise RuntimeError("skopeo 命令未找到。请先安装：brew install skopeo")
+
+
+def _tls_flag(insecure: bool) -> list[str]:
+    return ["--tls-verify=false"] if insecure else []
+
+
+def list_registry_catalog(registry: Registry) -> list[str]:
+    """读取 v2 Registry 的全量 repo 列表（HTTP `/v2/_catalog`，含分页）。"""
+    scheme = "http" if registry.insecure else "https"
+    base = f"{scheme}://{registry.url}/v2/_catalog"
+    auth = HTTPBasicAuth(registry.username, registry.get_password())
+    repos: list[str] = []
+    url: str | None = base
+    pages = 0
+    while url and pages < 50:  # 上限保护
+        pages += 1
+        resp = requests.get(
+            url,
+            auth=auth,
+            verify=not registry.insecure,
+            timeout=30,
+        )
+        if resp.status_code == 404:
+            raise RuntimeError(
+                "Registry 未启用 catalog API（404）。如使用 Harbor："
+                "项目设置 → 允许清单（'Enable catalog'）"
+            )
+        if resp.status_code in (401, 403):
+            raise RuntimeError(f"鉴权失败：HTTP {resp.status_code}")
+        resp.raise_for_status()
+        data = resp.json()
+        repos.extend(data.get("repositories", []))
+        # Docker Registry v2 风格分页：Link 头里带 ?n=...&last=...
+        link = resp.headers.get("Link", "")
+        url = _next_link(link)
+    return repos
+
+
+def _next_link(link_header: str) -> str | None:
+    """从 Link 头解析 next 链接。"""
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        part = part.strip()
+        if part.endswith('rel="next"'):
+            url = part.split(";")[0].strip().strip("<>")
+            return url
+    return None
+
+
+def list_repo_tags(registry: Registry, repo: str) -> list[str]:
+    """调用 `skopeo list-tags` 列出单个 repo 的所有 tag。"""
+    _skopeo_or_raise()
+    cmd = [
+        "skopeo",
+        *_tls_flag(registry.insecure),
+        "--creds",
+        f"{registry.username}:{registry.get_password()}",
+        "list-tags",
+        f"docker://{registry.url}/{repo}",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"list-tags 失败：{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+    try:
+        return json.loads(proc.stdout).get("Tags", []) or []
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"无法解析 skopeo 输出：{e}")
+
+
+def delete_image(registry: Registry, repo: str, tag: str) -> tuple[bool, str]:
+    """通过 `skopeo delete` 删除单个 repo:tag。返回 (success, output)。"""
+    _skopeo_or_raise()
+    target = f"docker://{registry.url}/{repo}:{tag}"
+    cmd = [
+        "skopeo",
+        *_tls_flag(registry.insecure),
+        "--creds",
+        f"{registry.username}:{registry.get_password()}",
+        "delete",
+        target,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    output = (proc.stdout + proc.stderr).strip()
+    return proc.returncode == 0, output
+
+
+def delete_all_tags(registry: Registry, repo: str) -> tuple[int, int, list[str]]:
+    """删除某个 repo 的所有 tag。返回 (成功数, 失败数, 错误信息列表)。"""
+    tags = list_repo_tags(registry, repo)
+    ok = 0
+    errors: list[str] = []
+    for tag in tags:
+        success, output = delete_image(registry, repo, tag)
+        if success:
+            ok += 1
+        else:
+            errors.append(f"{repo}:{tag} → {output}")
+    return ok, len(tags) - ok, errors
+
+
 def _run_task(task_id: int) -> None:
     with app.app_context():
         task: CopyTask | None = db.session.get(CopyTask, task_id)
@@ -444,6 +558,83 @@ def registries_delete(rid: int):
             db.session.commit()
             flash("已删除", "success")
     return redirect(url_for("registries_list"))
+
+
+# ---------------------------------------------------------------------------
+# 路由：Registry catalog 浏览 / 镜像删除
+# ---------------------------------------------------------------------------
+
+
+@app.route("/registries/<int:rid>/catalog")
+@login_required
+def registry_catalog(rid: int):
+    reg = db.session.get(Registry, rid)
+    if reg is None:
+        flash("Registry 不存在", "error")
+        return redirect(url_for("registries_list"))
+
+    repos_with_tags: list[tuple[str, list[str] | None, str | None]] = []
+    error: str | None = None
+    try:
+        repos = list_registry_catalog(reg)
+        # 只读顶层 + tag 总数；tag 列表按需展开
+        for repo in repos:
+            tags = list_repo_tags(reg, repo)
+            repos_with_tags.append((repo, tags, None))
+    except Exception as e:
+        error = str(e)
+
+    return render_template(
+        "catalog.html",
+        registry=reg,
+        repos=repos_with_tags,
+        error=error,
+        total_repos=len(repos_with_tags),
+    )
+
+
+@app.route("/registries/<int:rid>/images/delete", methods=["POST"])
+@login_required
+def registry_image_delete(rid: int):
+    reg = db.session.get(Registry, rid)
+    if reg is None:
+        flash("Registry 不存在", "error")
+        return redirect(url_for("registries_list"))
+
+    repo = (request.form.get("repo") or "").strip().lstrip("/")
+    tag = (request.form.get("tag") or "").strip()
+    delete_repo = request.form.get("scope") == "repo"
+
+    if not repo:
+        flash("缺少 repo 名称", "error")
+        return redirect(url_for("registry_catalog", rid=rid))
+
+    try:
+        if delete_repo:
+            ok, fail, errors = delete_all_tags(reg, repo)
+            if fail == 0 and ok > 0:
+                flash(f"已删除仓库 {repo} 下的 {ok} 个 tag", "success")
+            elif ok == 0 and fail == 0:
+                flash(f"仓库 {repo} 没有任何 tag", "info")
+            else:
+                flash(
+                    f"仓库 {repo}：成功 {ok}，失败 {fail}。"
+                    + (" 错误：" + "; ".join(errors[:3]) if errors else ""),
+                    "error",
+                )
+        else:
+            if not tag:
+                flash("缺少 tag", "error")
+                return redirect(url_for("registry_catalog", rid=rid))
+            success, output = delete_image(reg, repo, tag)
+            if success:
+                flash(f"已删除 {repo}:{tag}", "success")
+            else:
+                flash(f"删除 {repo}:{tag} 失败：{output}", "error")
+    except Exception as e:
+        flash(str(e), "error")
+
+    return redirect(url_for("registry_catalog", rid=rid))
 
 
 # ---------------------------------------------------------------------------

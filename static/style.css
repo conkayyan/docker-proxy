@@ -221,3 +221,24 @@ details summary {
 }
 
 .hint { color: var(--muted); font-size: 0.9rem; }
+
+.tag-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.4rem 0.8rem;
+}
+.tag-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.tag-list form { display: inline; }
+.tag-list code { word-break: break-all; }
