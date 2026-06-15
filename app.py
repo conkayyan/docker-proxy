@@ -40,7 +40,7 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
 from wtforms import BooleanField, PasswordField, StringField, SubmitField
-from wtforms.validators import DataRequired, EqualTo, Length, Optional
+from wtforms.validators import DataRequired, Length, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -161,19 +161,6 @@ class LoginForm(FlaskForm):
     username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
     password = PasswordField("密码", validators=[DataRequired()])
     submit = SubmitField("登录")
-
-
-class RegisterForm(FlaskForm):
-    username = StringField("用户名", validators=[DataRequired(), Length(3, 80)])
-    password = PasswordField(
-        "密码",
-        validators=[DataRequired(), Length(6, 128)],
-    )
-    confirm = PasswordField(
-        "确认密码",
-        validators=[DataRequired(), EqualTo("password", message="两次密码不一致")],
-    )
-    submit = SubmitField("注册")
 
 
 class RegistryForm(FlaskForm):
@@ -560,26 +547,6 @@ def login():
             login_user(user)
             return redirect(url_for("dashboard"))
     return render_template("login.html", form=form)
-
-
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if current_user.is_authenticated:
-        return redirect(url_for("dashboard"))
-    form = RegisterForm()
-    if form.validate_on_submit():
-        username = form.username.data.strip()
-        if User.query.filter_by(username=username).first():
-            flash("用户已存在", "error")
-        else:
-            user = User(username=username)
-            user.set_password(form.password.data)
-            db.session.add(user)
-            db.session.commit()
-            login_user(user)
-            flash("注册成功，已自动登录", "success")
-            return redirect(url_for("dashboard"))
-    return render_template("register.html", form=form)
 
 
 @app.route("/logout")
@@ -972,6 +939,13 @@ def not_found(_e):
 def init_db() -> None:
     with app.app_context():
         db.create_all()
+        # 私有部署：首次启动时建一个默认账号 admin / admin123
+        # 若 admin 已存在则跳过（idempotent）
+        if not User.query.filter_by(username="admin").first():
+            admin = User(username="admin")
+            admin.set_password("admin123")
+            db.session.add(admin)
+            db.session.commit()
 
 
 init_db()

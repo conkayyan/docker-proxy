@@ -5,7 +5,7 @@
 
 ## 功能
 
-- 本地账号登录/注册（SQLite，密码 `werkzeug` 哈希）
+- 本地账号登录（SQLite，密码 `werkzeug` 哈希，**无注册入口，私有部署**）
 - 在 Web 上管理多个目标 Registry（地址 + 用户名 + 密码，加密落库）
 - 表单提交源镜像 + 目标镜像 + 目标 Registry，后台 worker 调用 `skopeo copy`
 - 实时查看任务状态与日志（前端轮询）
@@ -32,6 +32,9 @@ python app.py
 
 - 在 `instance/` 下创建 SQLite 数据库 `app.db`
 - 生成 Fernet 密钥 `instance/secret.key`（用于加密 Registry 密码，请勿提交到 git）
+- **创建默认账号 `admin` / `admin123`**（如果不存在的话；idempotent）
+
+> 默认密码是固定的，部署到非私网环境前请直接 `sqlite3 instance/app.db` 改掉，或在登录后从 UI 改密（待加）。
 
 ## 命令映射
 
