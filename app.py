@@ -135,6 +135,7 @@ class CopyTask(db.Model):
     error = db.Column(db.Text, default="", nullable=False)
     command = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
+    multi_arch = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
@@ -192,6 +193,10 @@ class CopyForm(FlaskForm):
         validators=[DataRequired()],
         description="例如 library/nginx:1.27（不含 registry 地址）",
     )
+    multi_arch = BooleanField(
+        "多架构 (--multi-arch all)",
+        description="推送整张 manifest list（amd64 / arm64 / armv7 等）。在 Mac ARM 上推 nginx 等多架构镜像时建议勾选。",
+    )
     submit = SubmitField("开始拷贝")
 
 
@@ -218,6 +223,8 @@ def _ensure_worker() -> None:
 
 def _build_command(task: CopyTask) -> list[str]:
     cmd: list[str] = ["skopeo", "copy"]
+    if task.multi_arch:
+        cmd.append("--multi-arch=all")
     if task.registry.insecure:
         cmd.append("--dest-tls-verify=false")
     cmd.append(f"docker://{task.source_image}")
@@ -679,6 +686,7 @@ def copy_create():
 
     source = (request.form.get("source_image") or "").strip()
     dest = (request.form.get("dest_image") or "").strip()
+    multi_arch = request.form.get("multi_arch") in ("1", "on", "true", "yes")
     if not source or not dest:
         flash("源镜像和目标镜像不能为空", "error")
         return redirect(url_for("dashboard"))
@@ -688,6 +696,7 @@ def copy_create():
         registry_id=reg.id,
         source_image=source,
         dest_image=dest.lstrip("/"),
+        multi_arch=multi_arch,
         status="pending",
     )
     db.session.add(task)
@@ -707,6 +716,55 @@ def task_detail(task_id: int):
         flash("任务不存在", "error")
         return redirect(url_for("dashboard"))
     return render_template("task.html", task=task)
+
+
+@app.route("/tasks/<int:task_id>/retry", methods=["POST"])
+@login_required
+def task_retry(task_id: int):
+    task = db.session.get(CopyTask, task_id)
+    if task is None or task.user_id != current_user.id:
+        flash("任务不存在", "error")
+        return redirect(url_for("dashboard"))
+    if task.status in ("pending", "running"):
+        flash("任务正在排队或运行中，无需重试", "error")
+        return redirect(url_for("task_detail", task_id=task.id))
+    if task.status not in ("success", "failed"):
+        flash("当前状态不允许重试", "error")
+        return redirect(url_for("task_detail", task_id=task.id))
+
+    # 重置后重新入队；保留 created_at 以便追溯首次提交时间
+    task.status = "pending"
+    task.log = ""
+    task.error = ""
+    task.command = ""
+    task.return_code = None
+    task.started_at = None
+    task.finished_at = None
+    db.session.commit()
+
+    _ensure_worker()
+    task_queue.put(task.id)
+    flash(f"任务 #{task.id} 已重新加入队列", "success")
+    return redirect(url_for("task_detail", task_id=task.id))
+
+
+@app.route("/tasks/<int:task_id>/delete", methods=["POST"])
+@login_required
+def task_delete(task_id: int):
+    task = db.session.get(CopyTask, task_id)
+    if task is None or task.user_id != current_user.id:
+        flash("任务不存在", "error")
+        return redirect(url_for("dashboard"))
+    if task.status in ("pending", "running"):
+        flash("任务正在排队或运行中，不能删除", "error")
+        return redirect(url_for("task_detail", task_id=task.id))
+
+    db.session.delete(task)
+    db.session.commit()
+    flash(f"任务 #{task_id} 已删除", "success")
+
+    # 如果来源页是任务详情，回到 dashboard；否则回 dashboard
+    return redirect(request.referrer or url_for("dashboard"))
 
 
 @app.route("/api/tasks/<int:task_id>")

@@ -4,7 +4,19 @@
 <div class="card">
   <div class="card-head">
     <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span></h1>
-    <a class="btn small" href="{{ url_for('dashboard') }}">返回</a>
+    <div class="row-actions">
+      <a class="btn small" href="{{ url_for('dashboard') }}">返回</a>
+      {% if task.status in ('success', 'failed') %}
+      <form method="post" action="{{ url_for('task_retry', task_id=task.id) }}" style="display:inline;">
+        <button type="submit" class="btn small primary">重试</button>
+      </form>
+      {% endif %}
+      {% if task.status not in ('pending', 'running') %}
+      <form method="post" action="{{ url_for('task_delete', task_id=task.id) }}" onsubmit="return confirm('确认删除任务 #{{ task.id }} 的记录？');" style="display:inline;">
+        <button type="submit" class="btn small danger">删除</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 
   <dl class="kv">
