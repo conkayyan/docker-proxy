@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}重置密码 · {{ target.username }} · docker-proxy{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>重置密码</h1>
+  <p>为 <strong class="mono">{{ target.username }}</strong> 设置新密码。</p>
+  <form method="post">
+    {{ form.hidden_tag() }}
+    <label>
+      <span>新密码（至少 6 位）</span>
+      {{ form.new_password(autocomplete="new-password") }}
+    </label>
+    <label>
+      <span>确认密码</span>
+      {{ form.confirm(autocomplete="new-password") }}
+    </label>
+    <div class="row-actions">
+      {{ form.submit(class_="btn primary") }}
+      <a class="btn" href="{{ url_for('admin_users') }}">取消</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

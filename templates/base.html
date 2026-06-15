@@ -13,6 +13,8 @@
     <nav>
       <a href="{{ url_for('dashboard') }}">镜像拷贝</a>
       <a href="{{ url_for('registries_list') }}">Registry 管理</a>
+      {% if current_user.is_admin %}<a href="{{ url_for('admin_users') }}">账号管理</a>{% endif %}
+      <a href="{{ url_for('account') }}">账号</a>
       <a href="{{ url_for('logout') }}">退出（{{ current_user.username }}）</a>
     </nav>
   </header>

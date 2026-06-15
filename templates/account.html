@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}个人信息 · docker-proxy{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>个人信息</h1>
+  <dl class="kv" style="margin-bottom:1.5rem;">
+    <dt>用户名</dt><dd>{{ current_user.username }}</dd>
+    <dt>角色</dt><dd>
+      {% if current_user.is_admin %}<span class="badge badge-success">管理员</span>
+      {% else %}<span class="badge">普通用户</span>{% endif %}
+    </dd>
+    <dt>注册时间</dt><dd>{{ current_user.created_at.strftime('%Y-%m-%d %H:%M:%S') if current_user.created_at else '—' }}</dd>
+  </dl>
+
+  <h2 style="font-size:1.05rem;">修改密码</h2>
+  <form method="post">
+    {{ form.hidden_tag() }}
+    <label>
+      <span>当前密码</span>
+      {{ form.current_password(autocomplete="current-password") }}
+    </label>
+    <label>
+      <span>新密码（至少 6 位）</span>
+      {{ form.new_password(autocomplete="new-password") }}
+    </label>
+    <label>
+      <span>确认新密码</span>
+      {{ form.confirm(autocomplete="new-password") }}
+    </label>
+    {{ form.submit(class_="btn primary block") }}
+  </form>
+</div>
+{% endblock %}

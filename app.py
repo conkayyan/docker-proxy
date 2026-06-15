@@ -40,7 +40,7 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
 from wtforms import BooleanField, PasswordField, StringField, SubmitField
-from wtforms.validators import DataRequired, Length, Optional
+from wtforms.validators import DataRequired, EqualTo, Length, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -99,6 +99,7 @@ class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def set_password(self, password: str) -> None:
@@ -161,6 +162,42 @@ class LoginForm(FlaskForm):
     username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
     password = PasswordField("密码", validators=[DataRequired()])
     submit = SubmitField("登录")
+
+
+class ChangePasswordForm(FlaskForm):
+    current_password = PasswordField("当前密码", validators=[DataRequired()])
+    new_password = PasswordField(
+        "新密码", validators=[DataRequired(), Length(min=6, max=128)]
+    )
+    confirm = PasswordField(
+        "确认新密码",
+        validators=[DataRequired(), EqualTo("new_password", message="两次输入不一致")],
+    )
+    submit = SubmitField("修改密码")
+
+
+class AdminCreateUserForm(FlaskForm):
+    username = StringField("用户名", validators=[DataRequired(), Length(3, 80)])
+    password = PasswordField(
+        "密码", validators=[DataRequired(), Length(min=6, max=128)]
+    )
+    confirm = PasswordField(
+        "确认密码",
+        validators=[DataRequired(), EqualTo("password", message="两次输入不一致")],
+    )
+    is_admin = BooleanField("授予管理员权限")
+    submit = SubmitField("创建账号")
+
+
+class AdminResetPasswordForm(FlaskForm):
+    new_password = PasswordField(
+        "新密码", validators=[DataRequired(), Length(min=6, max=128)]
+    )
+    confirm = PasswordField(
+        "确认密码",
+        validators=[DataRequired(), EqualTo("new_password", message="两次输入不一致")],
+    )
+    submit = SubmitField("重置密码")
 
 
 class RegistryForm(FlaskForm):
@@ -534,6 +571,20 @@ def api_login_required(fn):
     return wrapper
 
 
+def admin_required(fn):
+    """仅 admin 用户可访问；未登录走 Flask-Login 重定向，非 admin 给出 flash + 302。"""
+
+    @wraps(fn)
+    @login_required
+    def wrapper(*args, **kwargs):
+        if not current_user.is_admin:
+            flash("需要管理员权限", "error")
+            return redirect(url_for("dashboard"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
@@ -554,6 +605,81 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# 路由：账号管理（admin）+ 个人信息
+# ---------------------------------------------------------------------------
+
+
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account():
+    """当前用户改自己的密码。"""
+    form = ChangePasswordForm()
+    if form.validate_on_submit():
+        if not current_user.check_password(form.current_password.data):
+            flash("当前密码错误", "error")
+        else:
+            current_user.set_password(form.new_password.data)
+            db.session.commit()
+            flash("密码已更新", "success")
+            return redirect(url_for("account"))
+    return render_template("account.html", form=form)
+
+
+@app.route("/admin/users", methods=["GET", "POST"])
+@admin_required
+def admin_users():
+    """管理员：列账号 + 新建账号。"""
+    form = AdminCreateUserForm()
+    if form.validate_on_submit():
+        username = form.username.data.strip()
+        if User.query.filter_by(username=username).first():
+            flash("用户已存在", "error")
+        else:
+            u = User(username=username, is_admin=form.is_admin.data)
+            u.set_password(form.password.data)
+            db.session.add(u)
+            db.session.commit()
+            flash(f"已创建用户 {username}", "success")
+            return redirect(url_for("admin_users"))
+    users = User.query.order_by(User.created_at.asc()).all()
+    return render_template("admin_users.html", form=form, users=users)
+
+
+@app.route("/admin/users/<int:uid>/reset", methods=["GET", "POST"])
+@admin_required
+def admin_user_reset(uid: int):
+    target = db.session.get(User, uid)
+    if target is None:
+        flash("用户不存在", "error")
+        return redirect(url_for("admin_users"))
+    form = AdminResetPasswordForm()
+    if form.validate_on_submit():
+        target.set_password(form.new_password.data)
+        db.session.commit()
+        flash(f"已重置 {target.username} 的密码", "success")
+        return redirect(url_for("admin_users"))
+    return render_template("admin_user_reset.html", form=form, target=target)
+
+
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+@admin_required
+def admin_user_delete(uid: int):
+    target = db.session.get(User, uid)
+    if target is None:
+        flash("用户不存在", "error")
+    elif target.id == current_user.id:
+        flash("不能删除当前登录的账号", "error")
+    elif target.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
+        flash("不能删除最后一个管理员", "error")
+    else:
+        username = target.username
+        db.session.delete(target)
+        db.session.commit()
+        flash(f"已删除用户 {username}", "success")
+    return redirect(url_for("admin_users"))
 
 
 # ---------------------------------------------------------------------------
@@ -940,12 +1066,15 @@ def init_db() -> None:
     with app.app_context():
         db.create_all()
         # 私有部署：首次启动时建一个默认账号 admin / admin123
-        # 若 admin 已存在则跳过（idempotent）
-        if not User.query.filter_by(username="admin").first():
-            admin = User(username="admin")
+        # 若 admin 已存在则跳过（idempotent），但确保其 is_admin=True
+        admin = User.query.filter_by(username="admin").first()
+        if admin is None:
+            admin = User(username="admin", is_admin=True)
             admin.set_password("admin123")
             db.session.add(admin)
-            db.session.commit()
+        elif not admin.is_admin:
+            admin.is_admin = True
+        db.session.commit()
 
 
 init_db()
