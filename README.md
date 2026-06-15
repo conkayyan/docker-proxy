@@ -17,6 +17,8 @@
 
 ## 启动
 
+### 方式 A：本地直接跑
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -28,13 +30,32 @@ python app.py
 # 浏览器打开 http://127.0.0.1:5000
 ```
 
-首次启动会自动：
+### 方式 B：Docker（推荐私有部署）
 
-- 在 `instance/` 下创建 SQLite 数据库 `app.db`
-- 生成 Fernet 密钥 `instance/secret.key`（用于加密 Registry 密码，请勿提交到 git）
+```bash
+docker compose up -d --build
+# 浏览器打开 http://localhost:5000
+# 数据持久化在 ./data/ 目录（SQLite + Fernet key）
+```
+
+镜像基于 `python:3.11-slim`，apt 装 skopeo；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。
+
+环境变量（docker-compose.yml 里改）：
+
+| 变量 | 用途 | 默认 |
+| --- | --- | --- |
+| `SECRET_KEY` | Flask session 密钥 | 随机（重启失效） |
+| `HARBOR_PROJECT` | 新建 Registry 时 project 字段的默认值 | `docker-proxy` |
+
+## 首次启动会自动
+
+- 在 `instance/`（本地）或 `/app/instance`（容器）下创建 SQLite 数据库 `app.db`
+- 生成 Fernet 密钥 `secret.key`（用于加密 Registry 密码）
 - **创建默认账号 `admin` / `admin123`**（如果不存在的话；idempotent）
 
-> 默认密码是固定的，部署到非私网环境前请直接 `sqlite3 instance/app.db` 改掉，或在登录后从 UI 改密（待加）。
+> 默认密码是固定的，部署到非私网环境前请：
+> 1. 改 `SECRET_KEY` 为随机字符串（建议 64+ 字符 hex）
+> 2. 在「我的账号」里把 `admin` 的密码改了，或在 UI 里建新管理员后把 `admin` 删了
 
 ## 命令映射
 
