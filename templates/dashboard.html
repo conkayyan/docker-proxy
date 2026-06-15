@@ -29,15 +29,15 @@
     <label>
       <span>源镜像</span>
       <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
-      <small>例如 <code>docker.io/library/nginx:1.27</code></small>
+      <small>例如 <code>docker.io/library/nginx:1.27</code>（Docker Hub 官方镜像的完整路径）</small>
     </label>
 
     <label>
-      <span>目标镜像（不含 registry 地址与 project 路径）</span>
-      <input type="text" name="dest_image" required placeholder="library/nginx:1.27" />
+      <span>目标镜像（仅 image:tag，不含 registry 地址与 project）</span>
+      <input type="text" name="dest_image" required placeholder="nginx:1.27" />
       <small>
-        例如 <code>library/nginx:1.27</code>：将推送到 <code>{所选 Registry.url}/[project]/library/nginx:1.27</code>。
-        <code>project</code> 为该 Registry 在「Registry 管理」中配置的路径前缀，可独立设置或留空。
+        例如 <code>nginx:1.27</code>：将推送到 <code>{所选 Registry.url}/{所选 Registry.project}/nginx:1.27</code>。
+        <code>project</code> 为该 Registry 在「Registry 管理」中配置的命名空间前缀，可独立设置或留空。
       </small>
     </label>
 

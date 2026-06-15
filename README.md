@@ -49,7 +49,12 @@ skopeo copy [--dest-tls-verify=false] \
 
 | 表单输入 | 实际执行 |
 | --- | --- |
-| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `library/nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/library/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
+| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
+
+> **目标镜像的命名规范**：
+> - 目标只填 `<image>:<tag>`，**不要带** `library/` 这类 Docker Hub 的 namespace 前缀。
+> - 完整路径由 app 拼成 `<registry.url>/<registry.project>/<image>:<tag>`，与 ACR / Harbor 等主流 registry 的「命名空间/仓库:tag」结构一致。
+> - 如果目标镜像已以 `<project>/` 开头（例如用户复制时带上了），app 不会重复追加。
 
 > **修改默认 project**：在 Registry 详情中直接改 `项目路径前缀` 字段；改完只影响该 Registry。
 > **设置所有新 Registry 的默认值**：

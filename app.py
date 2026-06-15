@@ -116,7 +116,7 @@ class Registry(db.Model):
     # 校验 TLS 证书：默认 True。仅在自签证书 / 内网环境才置 False。
     verify_tls = db.Column(db.Boolean, default=True, nullable=False)
     # 推送到该 Registry 时，自动追加到目标镜像路径前的 project 前缀。
-    # 例如 project="docker-proxy"，目标镜像 library/nginx:1.27 → docker-proxy/library/nginx:1.27。
+    # 例如 project="docker-proxy"，目标镜像 nginx:1.27 → docker-proxy/nginx:1.27。
     # 留空则不追加。建表时由 DEFAULT_PROJECT 提供初始值。
     project = db.Column(db.String(120), default=DEFAULT_PROJECT, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -193,7 +193,7 @@ class RegistryForm(FlaskForm):
         "项目路径前缀",
         validators=[Length(0, 120)],
         default=DEFAULT_PROJECT,
-        description="推送时自动加在目标镜像前。例如 docker-proxy → 实际推送为 docker-proxy/library/nginx:1.27；留空则不追加。",
+        description="推送时自动加在目标镜像前。例如 docker-proxy → 实际推送为 docker-proxy/nginx:1.27；留空则不追加。",
     )
     submit = SubmitField("保存")
 
@@ -203,12 +203,12 @@ class CopyForm(FlaskForm):
     source_image = StringField(
         "源镜像",
         validators=[DataRequired()],
-        description="例如 docker.io/library/nginx:1.27",
+        description="例如 docker.io/library/nginx:1.27（Docker Hub 官方镜像的完整路径）",
     )
     dest_image = StringField(
         "目标镜像",
         validators=[DataRequired()],
-        description="例如 library/nginx:1.27（不含 registry 地址）",
+        description="例如 nginx:1.27（仅 image:tag，project 由所选 Registry 自动追加）",
     )
     multi_arch = BooleanField(
         "多架构 (--multi-arch all)",
@@ -255,7 +255,7 @@ def _project_dest(dest_image: str, project: str = "") -> str:
 
     - 自动去除用户输入首部的 `/`
     - 若设置了 project 且 dest_image 尚未以它开头，自动追加
-    - 避免重复：用户输入 docker-proxy/library/nginx 不会再被前缀一次
+    - 避免重复：用户输入 docker-proxy/nginx 不会再被前缀一次
     """
     dest = dest_image.lstrip("/")
     if not project:
