@@ -645,7 +645,13 @@ def admin_users():
             flash(f"已创建用户 {username}", "success")
             return redirect(url_for("admin_users"))
     users = User.query.order_by(User.created_at.asc()).all()
-    return render_template("admin_users.html", form=form, users=users)
+    admin_count = User.query.filter_by(is_admin=True).count()
+    return render_template(
+        "admin_users.html",
+        form=form,
+        users=users,
+        admin_count=admin_count,
+    )
 
 
 @app.route("/admin/users/<int:uid>/reset", methods=["GET", "POST"])
