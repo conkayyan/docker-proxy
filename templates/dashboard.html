@@ -21,7 +21,7 @@
       <span>目标 Registry</span>
       <select name="registry_id" required>
         {% for r in registries %}
-          <option value="{{ r.id }}">{{ r.name }} — {{ r.url }}{% if r.project %} [project={{ r.project }}]{% endif %}{% if r.insecure %} (insecure){% endif %}</option>
+          <option value="{{ r.id }}">{{ r.name }} — {{ r.url }}{% if r.project %} [project={{ r.project }}]{% endif %}{% if not r.verify_tls %} (跳过 TLS){% endif %}</option>
         {% endfor %}
       </select>
     </label>

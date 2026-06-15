@@ -5,7 +5,7 @@
   <div class="card-head">
     <div>
       <h1 style="margin-bottom:.25rem;">{{ registry.name }}</h1>
-      <div class="mono hint">{{ registry.url }} · {{ registry.username }} {% if registry.insecure %}<span class="badge badge-pending">insecure</span>{% endif %}</div>
+      <div class="mono hint">{{ registry.url }} · {{ registry.username }} {% if not registry.verify_tls %}<span class="badge badge-failed">⚠ 跳过 TLS</span>{% endif %}</div>
     </div>
     <div class="row-actions">
       <a class="btn" href="{{ url_for('registries_list') }}">返回</a>

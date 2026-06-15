@@ -23,9 +23,12 @@
       {{ form.password(autocomplete="new-password") }}
     </label>
     <label class="checkbox">
-      {{ form.insecure() }}
-      <span>{{ form.insecure.label.text }}</span>
+      {{ form.verify_tls() }}
+      <span>{{ form.verify_tls.label.text }}</span>
     </label>
+    <small class="hint" style="display:block; margin:-0.5rem 0 1rem 1.6rem;">
+      默认勾选 = 校验 TLS 证书（生产环境推荐）。自签证书 / 内网环境请取消勾选。
+    </small>
     <label>
       <span>项目路径前缀 (project)</span>
       {{ form.project(placeholder="docker-proxy") }}

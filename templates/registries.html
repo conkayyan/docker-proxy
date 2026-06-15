@@ -15,7 +15,7 @@
         <th>地址</th>
         <th>用户名</th>
         <th>项目路径</th>
-        <th>insecure</th>
+        <th>TLS</th>
         <th>创建时间</th>
         <th></th>
       </tr>
@@ -27,7 +27,13 @@
         <td class="mono">{{ r.url }}</td>
         <td>{{ r.username }}</td>
         <td class="mono">{{ r.project or '—' }}</td>
-        <td>{{ '✓' if r.insecure else '' }}</td>
+        <td>
+          {% if r.verify_tls %}
+            <span class="badge badge-success" title="默认：校验 TLS 证书">🔒 校验</span>
+          {% else %}
+            <span class="badge badge-failed" title="已跳过 TLS 证书校验（自签/内网）">⚠ 跳过</span>
+          {% endif %}
+        </td>
         <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions">
           <a class="btn small" href="{{ url_for('registry_catalog', rid=r.id) }}">查看镜像</a>

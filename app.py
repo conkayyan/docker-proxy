@@ -113,7 +113,8 @@ class Registry(db.Model):
     url = db.Column(db.String(200), nullable=False)  # e.g. harbor.company.local
     username = db.Column(db.String(80), nullable=False)
     password_enc = db.Column(db.String(1024), nullable=False)
-    insecure = db.Column(db.Boolean, default=False, nullable=False)
+    # 校验 TLS 证书：默认 True。仅在自签证书 / 内网环境才置 False。
+    verify_tls = db.Column(db.Boolean, default=True, nullable=False)
     # 推送到该 Registry 时，自动追加到目标镜像路径前的 project 前缀。
     # 例如 project="docker-proxy"，目标镜像 library/nginx:1.27 → docker-proxy/library/nginx:1.27。
     # 留空则不追加。建表时由 DEFAULT_PROJECT 提供初始值。
@@ -183,7 +184,11 @@ class RegistryForm(FlaskForm):
     username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
     # 编辑模式下留空 = 不修改密码（路由层判断）。新建模式下必填（路由层校验）。
     password = PasswordField("密码", validators=[Optional(), Length(max=1024)])
-    insecure = BooleanField("跳过 TLS 校验（自签证书）")
+    # 校验 TLS 证书：默认勾选 = 安全默认；自签证书 / 内网环境可取消勾选。
+    verify_tls = BooleanField(
+        "校验 TLS 证书（推荐勾选；自签证书 / 内网环境请取消）",
+        default=True,
+    )
     project = StringField(
         "项目路径前缀",
         validators=[Length(0, 120)],
@@ -237,7 +242,7 @@ def _build_command(task: CopyTask) -> list[str]:
     cmd: list[str] = ["skopeo", "copy"]
     if task.multi_arch:
         cmd.append("--multi-arch=all")
-    if task.registry.insecure:
+    if not task.registry.verify_tls:
         cmd.append("--dest-tls-verify=false")
     cmd.append(f"docker://{task.source_image}")
     cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
@@ -270,13 +275,14 @@ def _skopeo_or_raise() -> None:
         raise RuntimeError("skopeo 命令未找到。请先安装：brew install skopeo")
 
 
-def _tls_flag(insecure: bool) -> list[str]:
-    return ["--tls-verify=false"] if insecure else []
+def _tls_flag(verify_tls: bool) -> list[str]:
+    """不校验 TLS 时追加 --tls-verify=false。校验时返回空（skopeo 默认即 verify）。"""
+    return [] if verify_tls else ["--tls-verify=false"]
 
 
 def list_registry_catalog(registry: Registry) -> list[str]:
     """读取 v2 Registry 的全量 repo 列表（HTTP `/v2/_catalog`，含分页）。"""
-    scheme = "http" if registry.insecure else "https"
+    scheme = "https" if registry.verify_tls else "http"
     base = f"{scheme}://{registry.url}/v2/_catalog"
     auth = HTTPBasicAuth(registry.username, registry.get_password())
     repos: list[str] = []
@@ -287,7 +293,7 @@ def list_registry_catalog(registry: Registry) -> list[str]:
         resp = requests.get(
             url,
             auth=auth,
-            verify=not registry.insecure,
+            verify=registry.verify_tls,
             timeout=30,
         )
         if resp.status_code == 404:
@@ -323,7 +329,7 @@ def list_repo_tags(registry: Registry, repo: str) -> list[str]:
     _skopeo_or_raise()
     cmd = [
         "skopeo",
-        *_tls_flag(registry.insecure),
+        *_tls_flag(registry.verify_tls),
         "--creds",
         f"{registry.username}:{registry.get_password()}",
         "list-tags",
@@ -346,7 +352,7 @@ def delete_image(registry: Registry, repo: str, tag: str) -> tuple[bool, str]:
     target = f"docker://{registry.url}/{repo}:{tag}"
     cmd = [
         "skopeo",
-        *_tls_flag(registry.insecure),
+        *_tls_flag(registry.verify_tls),
         "--creds",
         f"{registry.username}:{registry.get_password()}",
         "delete",
@@ -538,7 +544,7 @@ def registries_create():
             name=form.name.data.strip(),
             url=form.url.data.strip().replace("https://", "").replace("http://", "").rstrip("/"),
             username=form.username.data.strip(),
-            insecure=form.insecure.data,
+            verify_tls=form.verify_tls.data,
             project=(form.project.data or "").strip().strip("/"),
         )
         reg.set_password(form.password.data)
@@ -561,7 +567,7 @@ def registries_edit(rid: int):
         form.name.data = reg.name
         form.url.data = reg.url
         form.username.data = reg.username
-        form.insecure.data = reg.insecure
+        form.verify_tls.data = reg.verify_tls
         form.project.data = reg.project
         form.password.data = ""  # never echoed back
     if form.validate_on_submit():
@@ -573,7 +579,7 @@ def registries_edit(rid: int):
             .rstrip("/")
         )
         reg.username = form.username.data.strip()
-        reg.insecure = form.insecure.data
+        reg.verify_tls = form.verify_tls.data
         reg.project = (form.project.data or "").strip().strip("/")
         if form.password.data:
             reg.set_password(form.password.data)
