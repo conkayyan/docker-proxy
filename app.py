@@ -149,7 +149,10 @@ class CopyTask(db.Model):
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
 
-    user = db.relationship("User", backref=db.backref("tasks", lazy=True))
+    user = db.relationship(
+        "User",
+        backref=db.backref("tasks", lazy=True, cascade="all, delete-orphan"),
+    )
     registry = db.relationship("Registry", backref=db.backref("tasks", lazy=True))
 
 
@@ -681,10 +684,13 @@ def admin_user_delete(uid: int):
     elif target.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
         flash("不能删除最后一个管理员", "error")
     else:
+        # 先数一下该用户的任务数（cascade 在 commit 时会自动删，但提示用户更友好）
+        task_count = CopyTask.query.filter_by(user_id=target.id).count()
         username = target.username
-        db.session.delete(target)
+        db.session.delete(target)  # cascade="all, delete-orphan" 会带删 CopyTask
         db.session.commit()
-        flash(f"已删除用户 {username}", "success")
+        suffix = f"（含 {task_count} 个任务记录）" if task_count else ""
+        flash(f"已删除用户 {username}{suffix}", "success")
     return redirect(url_for("admin_users"))
 
 
