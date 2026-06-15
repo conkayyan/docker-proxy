@@ -66,9 +66,9 @@ def _load_or_create_fernet() -> Fernet:
 
 
 # 推送到目标 Registry 时强制追加的 project 路径前缀。
-# 例如目标镜像为 library/nginx:1.27 → 实际推送为 docker-proxy/library/nginx:1.27
-# 可通过环境变量 HARBOR_PROJECT 自定义；设为空字符串可关闭。
-HARBOR_PROJECT = os.environ.get("HARBOR_PROJECT", "docker-proxy").strip("/")
+# 不再是全局：每个 Registry 在创建/编辑时单独设置 project 字段。
+# 保留此变量是为了给"新建 Registry"表单提供默认值；不再参与命令构建。
+DEFAULT_PROJECT = os.environ.get("HARBOR_PROJECT", "docker-proxy").strip("/")
 
 
 FERNET = _load_or_create_fernet()
@@ -114,6 +114,10 @@ class Registry(db.Model):
     username = db.Column(db.String(80), nullable=False)
     password_enc = db.Column(db.String(1024), nullable=False)
     insecure = db.Column(db.Boolean, default=False, nullable=False)
+    # 推送到该 Registry 时，自动追加到目标镜像路径前的 project 前缀。
+    # 例如 project="docker-proxy"，目标镜像 library/nginx:1.27 → docker-proxy/library/nginx:1.27。
+    # 留空则不追加。建表时由 DEFAULT_PROJECT 提供初始值。
+    project = db.Column(db.String(120), default=DEFAULT_PROJECT, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def set_password(self, password: str) -> None:
@@ -179,6 +183,12 @@ class RegistryForm(FlaskForm):
     username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
     password = PasswordField("密码", validators=[DataRequired()])
     insecure = BooleanField("跳过 TLS 校验（自签证书）")
+    project = StringField(
+        "项目路径前缀",
+        validators=[Length(0, 120)],
+        default=DEFAULT_PROJECT,
+        description="推送时自动加在目标镜像前。例如 docker-proxy → 实际推送为 docker-proxy/library/nginx:1.27；留空则不追加。",
+    )
     submit = SubmitField("保存")
 
 
@@ -229,24 +239,24 @@ def _build_command(task: CopyTask) -> list[str]:
     if task.registry.insecure:
         cmd.append("--dest-tls-verify=false")
     cmd.append(f"docker://{task.source_image}")
-    cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image)}")
+    cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
     cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
     return cmd
 
 
-def _project_dest(dest_image: str) -> str:
+def _project_dest(dest_image: str, project: str = "") -> str:
     """返回带 project 前缀的目标路径。
 
     - 自动去除用户输入首部的 `/`
-    - 若设置了 HARBOR_PROJECT 且 dest_image 尚未以它开头，自动追加
+    - 若设置了 project 且 dest_image 尚未以它开头，自动追加
     - 避免重复：用户输入 docker-proxy/library/nginx 不会再被前缀一次
     """
     dest = dest_image.lstrip("/")
-    if not HARBOR_PROJECT:
+    if not project:
         return dest
-    if dest == HARBOR_PROJECT or dest.startswith(f"{HARBOR_PROJECT}/"):
+    if dest == project or dest.startswith(f"{project}/"):
         return dest
-    return f"{HARBOR_PROJECT}/{dest}"
+    return f"{project}/{dest}"
 
 
 # ---------------------------------------------------------------------------
@@ -517,12 +527,15 @@ def registries_list():
 @login_required
 def registries_create():
     form = RegistryForm()
+    if request.method == "GET":
+        form.project.data = DEFAULT_PROJECT
     if form.validate_on_submit():
         reg = Registry(
             name=form.name.data.strip(),
             url=form.url.data.strip().replace("https://", "").replace("http://", "").rstrip("/"),
             username=form.username.data.strip(),
             insecure=form.insecure.data,
+            project=(form.project.data or "").strip().strip("/"),
         )
         reg.set_password(form.password.data)
         db.session.add(reg)
@@ -545,6 +558,7 @@ def registries_edit(rid: int):
         form.url.data = reg.url
         form.username.data = reg.username
         form.insecure.data = reg.insecure
+        form.project.data = reg.project
         form.password.data = ""  # never echoed back
     if form.validate_on_submit():
         reg.name = form.name.data.strip()
@@ -556,6 +570,7 @@ def registries_edit(rid: int):
         )
         reg.username = form.username.data.strip()
         reg.insecure = form.insecure.data
+        reg.project = (form.project.data or "").strip().strip("/")
         if form.password.data:
             reg.set_password(form.password.data)
         db.session.commit()
@@ -823,7 +838,8 @@ def tasks_recent():
                     "source_image": t.source_image,
                     "dest_image": t.dest_image,
                     "registry_url": t.registry.url,
-                    "project_dest": _project_dest(t.dest_image),
+                    "registry_project": t.registry.project,
+                    "project_dest": _project_dest(t.dest_image, t.registry.project),
                     "created_at": t.created_at.isoformat() if t.created_at else None,
                     "started_at": t.started_at.isoformat() if t.started_at else None,
                     "finished_at": t.finished_at.isoformat() if t.finished_at else None,
@@ -843,7 +859,7 @@ def tasks_recent():
 def inject_globals():
     return {
         "current_year": datetime.utcnow().year,
-        "harbor_project": HARBOR_PROJECT,
+        "default_project": DEFAULT_PROJECT,
         "project_dest": _project_dest,
     }
 

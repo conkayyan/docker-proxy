@@ -26,6 +26,11 @@
       {{ form.insecure() }}
       <span>{{ form.insecure.label.text }}</span>
     </label>
+    <label>
+      <span>项目路径前缀 (project)</span>
+      {{ form.project(placeholder="docker-proxy") }}
+      <small>{{ form.project.description }}</small>
+    </label>
     <div class="row-actions">
       <button type="submit" class="btn primary">保存</button>
       <a class="btn" href="{{ url_for('registries_list') }}">取消</a>

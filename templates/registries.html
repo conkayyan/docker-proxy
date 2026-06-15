@@ -14,6 +14,7 @@
         <th>名称</th>
         <th>地址</th>
         <th>用户名</th>
+        <th>项目路径</th>
         <th>insecure</th>
         <th>创建时间</th>
         <th></th>
@@ -25,6 +26,7 @@
         <td>{{ r.name }}</td>
         <td class="mono">{{ r.url }}</td>
         <td>{{ r.username }}</td>
+        <td class="mono">{{ r.project or '—' }}</td>
         <td>{{ '✓' if r.insecure else '' }}</td>
         <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions">
