@@ -336,7 +336,11 @@ def _tls_flag(verify_tls: bool) -> list[str]:
 
 
 def list_registry_catalog(registry: Registry) -> list[str]:
-    """读取 v2 Registry 的全量 repo 列表（HTTP `/v2/_catalog`，含分页）。"""
+    """读取 v2 Registry 的全量 repo 列表（HTTP `/v2/_catalog`，含分页）。
+
+    错误信息要尽量 actionable：401/403 通常是临时密码过期或权限不足，
+    不是 app 本身的问题。
+    """
     scheme = "https" if registry.verify_tls else "http"
     base = f"{scheme}://{registry.url}/v2/_catalog"
     auth = HTTPBasicAuth(registry.username, registry.get_password())
@@ -353,11 +357,19 @@ def list_registry_catalog(registry: Registry) -> list[str]:
         )
         if resp.status_code == 404:
             raise RuntimeError(
-                "Registry 未启用 catalog API（404）。如使用 Harbor："
-                "项目设置 → 允许清单（'Enable catalog'）"
+                f"{registry.url} 未启用 catalog API（404）。"
+                "Harbor：项目设置 → 允许清单（'Enable catalog'）；"
+                "部分 Registry 干脆没实现此接口。"
             )
         if resp.status_code in (401, 403):
-            raise RuntimeError(f"鉴权失败：HTTP {resp.status_code}")
+            # 401 = 凭证不被认可；403 = 凭证有效但无权限。
+            # 阿里云 ACR 个人版：临时密码 1 小时过期，过期后即 401。
+            raise RuntimeError(
+                f"鉴权失败：HTTP {resp.status_code} @ {registry.url}。"
+                "最常见原因：① 临时密码已过期（控制台 → 访问凭证 → "
+                "重新生成临时密码，再在 Registry 编辑页保存）；"
+                "② 当前账号对该 Registry 命名空间缺少读权限。"
+            )
         resp.raise_for_status()
         data = resp.json()
         repos.extend(data.get("repositories", []))
