@@ -194,6 +194,7 @@ table.data tr:hover td { background: #fafbfc; }
   color: #374151;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 .badge-pending { background: #fef3c7; color: #92400e; }
 .badge-running { background: #dbeafe; color: #1e40af; }
