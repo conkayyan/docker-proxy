@@ -26,7 +26,7 @@
           {% else %}<span class="badge">普通用户</span>{% endif %}
         </td>
         <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M:%S') if u.created_at else '—' }}</td>
-        <td class="row-actions">
+        <td class="row-actions" style="flex-direction:row; flex-wrap:wrap; gap:.4rem;">
           <a class="btn small" href="{{ url_for('admin_user_reset', uid=u.id) }}">重置密码</a>
           <form method="post" action="{{ url_for('admin_user_delete', uid=u.id) }}" onsubmit="return confirm('确认删除用户 {{ u.username }} ？');" style="display:inline;">
             <button type="submit" class="btn small danger">删除</button>
@@ -40,7 +40,7 @@
 
 <div class="card">
   <h2 style="font-size:1.05rem; margin-top:0;">新建账号</h2>
-  <form method="post">
+  <form method="post" class="form-grid">
     {{ form.hidden_tag() }}
     <label>
       <span>用户名（3-80 字符）</span>
@@ -54,11 +54,11 @@
       <span>确认密码</span>
       {{ form.confirm(autocomplete="new-password") }}
     </label>
-    <label class="checkbox">
+    <label class="checkbox full" style="align-items:center;">
       {{ form.is_admin() }}
       <span>授予管理员权限</span>
     </label>
-    <div class="row-actions">
+    <div class="full row-actions" style="flex-direction:row; gap:.4rem;">
       {{ form.submit(class_="btn primary") }}
       <a class="btn" href="{{ url_for('admin_users') }}">取消</a>
     </div>
