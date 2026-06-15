@@ -65,6 +65,7 @@
     var retryForm = document.getElementById('retry-form');
     var deleteForm = document.getElementById('delete-form');
     var pendingAlert = document.getElementById('pending-alert');
+    var flashes = document.getElementById('flashes');
 
     function setBadge(s) {
       badge.textContent = s;
@@ -104,6 +105,9 @@
           if (deleteForm) deleteForm.style.display = (d.status === 'pending' || d.status === 'running') ? 'none' : 'inline';
           // 排队提示：仅 pending 时显示
           if (pendingAlert) pendingAlert.style.display = (d.status === 'pending') ? 'block' : 'none';
+          // 顶部 flash（如重试后的 "任务 #X 已重新加入队列"）一旦状态离开 pending
+          // 就自动清除 —— 任务已经跑起来了，这条信息已经过时
+          if (flashes && d.status !== 'pending') flashes.remove();
           // 绿色脉动圆点：仅 running 时显示（pending 排队中 / 终态都不显示）
           var dot = document.getElementById('live-dot');
           if (d.status === 'running') {
