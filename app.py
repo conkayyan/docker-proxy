@@ -37,7 +37,7 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
 from wtforms import BooleanField, PasswordField, StringField, SubmitField
-from wtforms.validators import DataRequired, EqualTo, Length
+from wtforms.validators import DataRequired, EqualTo, Length, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
@@ -181,7 +181,8 @@ class RegistryForm(FlaskForm):
         description="例如 harbor.company.local",
     )
     username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
-    password = PasswordField("密码", validators=[DataRequired()])
+    # 编辑模式下留空 = 不修改密码（路由层判断）。新建模式下必填（路由层校验）。
+    password = PasswordField("密码", validators=[Optional(), Length(max=1024)])
     insecure = BooleanField("跳过 TLS 校验（自签证书）")
     project = StringField(
         "项目路径前缀",
@@ -530,6 +531,9 @@ def registries_create():
     if request.method == "GET":
         form.project.data = DEFAULT_PROJECT
     if form.validate_on_submit():
+        if not (form.password.data or "").strip():
+            flash("新建 Registry 时密码不能为空", "error")
+            return render_template("registry_form.html", form=form, mode="new")
         reg = Registry(
             name=form.name.data.strip(),
             url=form.url.data.strip().replace("https://", "").replace("http://", "").rstrip("/"),
