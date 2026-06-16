@@ -8,11 +8,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from queue import Queue
 
@@ -38,6 +39,7 @@ from flask_login import (
     logout_user,
 )
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from flask_wtf import FlaskForm
 from wtforms import BooleanField, PasswordField, StringField, SubmitField
 from wtforms.validators import DataRequired, EqualTo, Length, Optional
@@ -148,6 +150,10 @@ class CopyTask(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
+    # 看门狗用：worker 每次落库都刷新 heartbeat_at；watchdog 据此判断 worker/skopeo
+    # 是否已挂。subprocess_pid 记录当前 skopeo 子进程的 PID，挂起时 watchdog 可以 SIGTERM。
+    heartbeat_at = db.Column(db.DateTime)
+    subprocess_pid = db.Column(db.Integer)
 
     user = db.relationship(
         "User",
@@ -255,16 +261,60 @@ task_queue: "Queue[int]" = Queue()
 _worker_started = False
 _worker_lock = threading.Lock()
 
+# 看门狗：worker 必须至少每 HEARTBEAT_TIMEOUT 秒刷新一次 heartbeat_at，
+# 否则 watchdog 会把对应的 running 任务标为 failed 并 SIGTERM 子进程。
+# 默认 30s 心跳超时、10s 巡检一次；可通过环境变量调。
+WATCHDOG_INTERVAL_SEC = int(os.environ.get("TASK_WATCHDOG_INTERVAL", "10"))
+HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("TASK_HEARTBEAT_TIMEOUT", "30"))
+
 
 def _ensure_worker() -> None:
-    """惰性启动后台 worker 线程（每次进程一个）。"""
+    """惰性启动后台 worker + 看门狗线程（每次进程一个）。"""
     global _worker_started
     with _worker_lock:
         if _worker_started:
             return
-        t = threading.Thread(target=_worker_loop, args=(app,), daemon=True)
-        t.start()
+        threading.Thread(target=_worker_loop, args=(app,), daemon=True).start()
+        threading.Thread(target=_watchdog_loop, daemon=True).start()
         _worker_started = True
+
+
+def _migrate_columns() -> None:
+    """给已有 SQLite 表加新列。db.create_all() 不会动已存在的表。
+
+    每条 ALTER 都包在 try/except 里：列已存在时 SQLite 抛 OperationalError，
+    直接吞掉，保证幂等。
+    """
+    stmts = [
+        "ALTER TABLE copy_tasks ADD COLUMN heartbeat_at DATETIME",
+        "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
+    ]
+    with app.app_context():
+        for sql in stmts:
+            try:
+                db.session.execute(text(sql))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+
+def _recover_orphan_running_tasks() -> None:
+    """服务启动时清理上一次会话遗留的 running 任务。
+
+    进程被 kill -9 / OOM / docker compose restart 时，DB 里的状态不会跟着清。
+    在内存里的 task_queue 早已丢失这些 id，新 worker 不会再去拉它们，
+    所以必须主动把它们标为 failed，否则 dashboard 上会一直显示 running。
+    """
+    with app.app_context():
+        orphans = CopyTask.query.filter(CopyTask.status == "running").all()
+        if not orphans:
+            return
+        now = datetime.utcnow()
+        for task in orphans:
+            task.status = "failed"
+            task.error = "服务重启时检测到上一次会话未完成的任务，已自动标记为失败"
+            task.finished_at = now
+        db.session.commit()
 
 
 def _build_command(task: CopyTask) -> list[str]:
@@ -479,12 +529,12 @@ def _run_task(task_id: int) -> None:
 
         task.status = "running"
         task.started_at = datetime.utcnow()
+        task.heartbeat_at = datetime.utcnow()
         db.session.commit()
 
         cmd = _build_command(task)
         # 子进程实际调用用原始 cmd（包含真实密码，仅在内存中传给 skopeo）。
         # 不再存 task.command 到 DB；UI 上要展示时由 _display_command() 重新拼接 + 掩码。
-        db.session.commit()
 
         if shutil.which("skopeo") is None:
             task.status = "failed"
@@ -502,6 +552,10 @@ def _run_task(task_id: int) -> None:
                 text=True,
                 bufsize=1,
             )
+            # 记录子进程 PID，给 watchdog 用于 SIGTERM；同步刷新一次心跳
+            task.subprocess_pid = proc.pid
+            task.heartbeat_at = datetime.utcnow()
+            db.session.commit()
         except OSError as e:
             task.status = "failed"
             task.error = f"启动 skopeo 失败：{e}"
@@ -518,12 +572,21 @@ def _run_task(task_id: int) -> None:
                 now = time.monotonic()
                 if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
                     task.log = _mask_log_str("\n".join(log_lines))
+                    task.heartbeat_at = datetime.utcnow()
                     db.session.commit()
                     last_flush = now
             proc.wait()
-            task.return_code = proc.returncode
             task.log = _mask_log_str("\n".join(log_lines))
             task.finished_at = datetime.utcnow()
+
+            # 看门狗可能已在我们 wait 期间把状态改成 failed / success（如有其他
+            # 进程接手、或者 watchdog 因心跳超时介入）。重新从 DB 读一次，避免
+            # 覆盖外部写入。
+            current = db.session.get(CopyTask, task_id)
+            if current is None or current.status != "running":
+                return
+
+            task.return_code = proc.returncode
             if proc.returncode == 0:
                 task.status = "success"
             else:
@@ -547,6 +610,52 @@ def _worker_loop(app_obj: Flask) -> None:
             _run_task(task_id)
         finally:
             task_queue.task_done()
+
+
+def _check_hung_tasks() -> None:
+    """看门狗核心：找出心跳超时的 running 任务，标记 failed 并 SIGTERM 子进程。
+
+    心跳由 _run_task 在每次 stdout 刷库时刷新（≈1.5s 一次）。
+    若 worker 卡住（DB 死锁、skopeo 子进程僵死但 stdout EOF、worker 线程崩了），
+    heartbeat_at 就会停在过去；超时后这条路径负责善后。
+    """
+    with app.app_context():
+        threshold = datetime.utcnow() - timedelta(seconds=HEARTBEAT_TIMEOUT_SEC)
+        stale = CopyTask.query.filter(
+            CopyTask.status == "running",
+            CopyTask.heartbeat_at.isnot(None),
+            CopyTask.heartbeat_at < threshold,
+        ).all()
+        if not stale:
+            return
+        now = datetime.utcnow()
+        for task in stale:
+            task.status = "failed"
+            task.error = (
+                f"任务超过 {HEARTBEAT_TIMEOUT_SEC}s 未上报心跳，"
+                "worker/skopeo 可能已挂起，已自动标记为失败"
+            )
+            task.finished_at = now
+            if task.subprocess_pid:
+                try:
+                    os.kill(task.subprocess_pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    # 子进程已退出 / 不属于本进程，跳过即可
+                    pass
+        db.session.commit()
+
+
+def _watchdog_loop() -> None:
+    """看门狗线程：周期性扫描并处理心跳超时的任务。
+
+    任何异常都不能让这条线程死掉 —— 否则一次失败后整个机制就废了。
+    """
+    while True:
+        try:
+            _check_hung_tasks()
+        except Exception:  # pragma: no cover
+            pass
+        time.sleep(WATCHDOG_INTERVAL_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1202,8 @@ def not_found(_e):
 
 
 def init_db() -> None:
+    # 给已存在的 SQLite 表补上新列（create_all 不会动已有表）
+    _migrate_columns()
     with app.app_context():
         db.create_all()
         # 私有部署：首次启动时建一个默认账号 admin / admin123
@@ -1105,6 +1216,8 @@ def init_db() -> None:
         elif not admin.is_admin:
             admin.is_admin = True
         db.session.commit()
+    # 清理上一次会话遗留的 running 任务（worker 内存里的队列已丢，DB 上的状态得主动改）
+    _recover_orphan_running_tasks()
 
 
 init_db()
