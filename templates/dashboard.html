@@ -28,18 +28,11 @@
 
     <label>
       <span>源类型</span>
-      <div class="radio-group">
-        <label class="radio">
-          <input type="radio" name="source_type" value="docker" checked />
-          <span>docker（从 registry 拉取）</span>
-        </label>
-        <label class="radio">
-          <input type="radio" name="source_type" value="docker-daemon" />
-          <span>docker-daemon（从本地 docker daemon 取）</span>
-        </label>
-      </div>
-      <small>docker: 填镜像完整路径如 <code>docker.io/library/nginx:1.27</code>。<br>
-            docker-daemon: 填本地 image:tag 如 <code>nginx:1.27</code>，会从运行 skopeo 的同台机器的 docker daemon 取。</small>
+      <select name="source_type">
+        <option value="docker" selected>docker — 从 registry 拉取</option>
+        <option value="docker-daemon">docker-daemon — 从本地 docker daemon 取</option>
+      </select>
+      <small>docker 填完整路径如 <code>docker.io/library/nginx:1.27</code>；docker-daemon 填本地 image:tag 如 <code>nginx:1.27</code>。</small>
     </label>
 
     <label>
