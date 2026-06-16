@@ -329,23 +329,30 @@ def _migrate_columns() -> None:
                 db.session.rollback()
 
 
-def _recover_orphan_running_tasks() -> None:
-    """服务启动时清理上一次会话遗留的 running 任务。
+def _recover_unfinished_tasks() -> None:
+    """服务启动时清理上一次会话遗留的 running / pending 任务。
 
-    进程被 kill -9 / OOM / docker compose restart 时，DB 里的状态不会跟着清。
-    在内存里的 task_queue 早已丢失这些 id，新 worker 不会再去拉它们，
-    所以必须主动把它们标为 failed，否则 dashboard 上会一直显示 running。
+    重启时 in-memory 的 task_queue 已经丢失；如果还把这些任务的 id 塞回队列
+    让新 worker 接着跑，dashboard 上就会混着"上次会话的"和"这次会话的"任务，
+    行为不符合用户预期（重启即清场，重试由用户手动发起）。所以把 status 为
+    running 和 pending 的行全部置为 failed，错误信息区分两种来源。
     """
     with app.app_context():
-        orphans = CopyTask.query.filter(CopyTask.status == "running").all()
-        if not orphans:
-            return
         now = datetime.utcnow()
-        for task in orphans:
+        # running：上一次会话跑到一半没跑完
+        running = CopyTask.query.filter(CopyTask.status == "running").all()
+        for task in running:
             task.status = "failed"
             task.error = "服务重启时检测到上一次会话未完成的任务，已自动标记为失败"
             task.finished_at = now
-        db.session.commit()
+        # pending：上一次会话还没轮到跑的，统一判失败，由用户主动重试
+        pending = CopyTask.query.filter(CopyTask.status == "pending").all()
+        for task in pending:
+            task.status = "failed"
+            task.error = "服务重启时检测到上一次会话未启动的任务，已自动标记为失败"
+            task.finished_at = now
+        if running or pending:
+            db.session.commit()
 
 
 def _build_command(task: CopyTask) -> list[str]:
@@ -1253,10 +1260,9 @@ def init_db() -> None:
         elif not admin.is_admin:
             admin.is_admin = True
         db.session.commit()
-    # 清理上一次会话遗留的 running 任务（worker 内存里的队列已丢，DB 上的状态得主动改）
-    _recover_orphan_running_tasks()
-    # in-memory task_queue 也丢了；把 DB 里 pending 的全部重新塞回队列
-    _enqueue_pending_tasks()
+    # 清理上一次会话遗留的 running / pending 任务 —— 重启即清场，
+    # 想重试由用户自己在 dashboard 上点。
+    _recover_unfinished_tasks()
 
 
 init_db()
