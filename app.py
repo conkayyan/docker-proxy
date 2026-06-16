@@ -269,6 +269,11 @@ _worker_lock = threading.Lock()
 WATCHDOG_INTERVAL_SEC = int(os.environ.get("TASK_WATCHDOG_INTERVAL", "10"))
 HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("TASK_HEARTBEAT_TIMEOUT", "120"))
 
+# 心跳 ticker 间隔：_run_task 在跑期间，每 N 秒刷一次 heartbeat_at，跟
+# 子进程有没有 stdout 输出无关。skopeo v2 / multi-arch 拷贝时切完 blob
+# 就沉默几分钟传数据，靠这个保命。可通过环境变量调。
+HEARTBEAT_TICK_SEC = int(os.environ.get("TASK_HEARTBEAT_TICK", "5"))
+
 
 def _ensure_worker() -> None:
     """惰性启动后台 worker + 看门狗线程（每次进程一个）。
@@ -603,6 +608,15 @@ def _run_task(task_id: int) -> None:
             db.session.commit()
             return
 
+        # ticker：独立于 stdout 的心跳线程。skopeo v2 拷贝时切完 blob 就沉默
+        # 好几分钟传数据，主线程 os.read 卡住没法自己刷心跳 + 没法 commit，
+        # 靠 ticker 每 5s commit 一次 heartbeat 到 DB 来保命。
+        stop_ticker = threading.Event()
+        ticker = threading.Thread(
+            target=_heartbeat_ticker, args=(task_id, stop_ticker), daemon=True
+        )
+        ticker.start()
+
         try:
             assert proc.stdout is not None
             stdout_fd = proc.stdout.fileno()
@@ -617,7 +631,7 @@ def _run_task(task_id: int) -> None:
                 if not chunk:
                     break
                 # 任何字节都算 skopeo 还在干活，立刻更新心跳（仅 in-memory，
-                # 落库交给下面 1.5s 节流，避免狂 commit）
+                # 落库交给下面 1.5s 节流 + ticker 共同保证，避免狂 commit）
                 task.heartbeat_at = datetime.utcnow()
                 buf += chunk
                 # 切出 \n 结尾的完整行。每行内部如有 \r，表示 skopeo 原地
@@ -638,6 +652,7 @@ def _run_task(task_id: int) -> None:
                 now = time.monotonic()
                 if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
                     task.log = _mask_log_str("\n".join(log_lines))
+                    task.heartbeat_at = datetime.utcnow()
                     db.session.commit()
                     last_flush = now
             # EOF：把最后一段没 \n 收尾的也写进 log
@@ -669,7 +684,38 @@ def _run_task(task_id: int) -> None:
             task.error = f"执行异常：{e}"
             task.finished_at = datetime.utcnow()
         finally:
+            stop_ticker.set()
             db.session.commit()
+
+
+def _heartbeat_ticker(task_id: int, stop: threading.Event) -> None:
+    """_run_task 期间独立刷 heartbeat 的守护线程。
+
+    主线程用 os.read 阻塞读 stdout 期间没法自己刷心跳；skopeo v2 / multi-arch
+    拷贝切完 blob 就沉默好几分钟传数据，那段窗口里如果只看 stdout 长度就会
+    被 watchdog 误判挂起。ticker 每 HEARTBEAT_TICK_SEC 秒把 task.heartbeat_at
+    拨到当前时间并 commit 到 DB（自己开 app_context 重新 fetch 任务，避免和
+    主线程共享 SQLAlchemy session）。
+
+    stop 事件置位后 ticker 在 0.5s 内退出。任何异常吞掉，不让 ticker 死。
+    """
+    last_tick = time.monotonic()
+    while not stop.wait(0.5):
+        now = time.monotonic()
+        if now - last_tick >= HEARTBEAT_TICK_SEC:
+            try:
+                with app.app_context():
+                    t = db.session.get(CopyTask, task_id)
+                    if t is not None and t.status == "running":
+                        t.heartbeat_at = datetime.utcnow()
+                        db.session.commit()
+            except Exception:
+                # SQLite 锁、session 冲突等都吞掉 —— ticker 不能影响主线程
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+            last_tick = now
 
 
 def _worker_loop(app_obj: Flask) -> None:
