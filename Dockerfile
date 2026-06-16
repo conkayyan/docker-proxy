@@ -4,13 +4,21 @@
 
 FROM python:3.11-slim
 
+# 时区：默认 Asia/Shanghai，需要别的时区在 build 时传 --build-arg TZ=Asia/Tokyo
+# tzdata 同时给系统（/usr/share/zoneinfo）和 Python（zoneinfo）用。
+ARG TZ=Asia/Shanghai
+
 # skopeo 是系统命令，pip 装不到；用 apt
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends skopeo \
+    && apt-get install -y --no-install-recommends skopeo tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 # 验证一下 skopeo 装上了，build 时就 fail
 RUN skopeo --version
+
+ENV TZ=$TZ
 
 WORKDIR /app
 
