@@ -583,12 +583,14 @@ def _run_task(task_id: int) -> None:
 
         log_lines: list[str] = []
         try:
+            # bufsize=0 + os.read：text=True/bufsize=1 是 line-buffered，
+            # 只在 \n 到达时 yield —— 而 skopeo 的进度条 [=>--] 是用 \r 原地刷新
+            # 的，中间没 \n，那段窗口里心跳会停。改读原始字节，任意 chunk 都算进度。
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                bufsize=0,
             )
             # 记录子进程 PID，给 watchdog 用于 SIGTERM；同步刷新一次心跳
             task.subprocess_pid = proc.pid
@@ -603,16 +605,48 @@ def _run_task(task_id: int) -> None:
 
         try:
             assert proc.stdout is not None
+            stdout_fd = proc.stdout.fileno()
+            buf = b""
             last_flush = 0.0
-            for line in proc.stdout:
-                log_lines.append(line.rstrip())
-                # 每 5 行 或 每 1.5 秒（取较快者）落库一次，让前端轮询能及时看到
+            while True:
+                try:
+                    chunk = os.read(stdout_fd, 4096)
+                except OSError:
+                    # pipe 已被子进程关闭 = EOF
+                    break
+                if not chunk:
+                    break
+                # 任何字节都算 skopeo 还在干活，立刻更新心跳（仅 in-memory，
+                # 落库交给下面 1.5s 节流，避免狂 commit）
+                task.heartbeat_at = datetime.utcnow()
+                buf += chunk
+                # 切出 \n 结尾的完整行。每行内部如有 \r，表示 skopeo 原地
+                # 刷新过进度条，只保留最后一段（最近 \r 之后的内容）——
+                # 中间被覆盖的状态对运维没用，写进 log 也只是噪音。
+                while b"\n" in buf:
+                    nl_idx = buf.index(b"\n")
+                    line_buf = buf[:nl_idx]
+                    buf = buf[nl_idx + 1 :]
+                    if line_buf.endswith(b"\r"):
+                        line_buf = line_buf[:-1]
+                    cr_idx = line_buf.rfind(b"\r")
+                    if cr_idx != -1:
+                        line_buf = line_buf[cr_idx + 1 :]
+                    if line_buf:
+                        log_lines.append(line_buf.decode("utf-8", errors="replace"))
+                # 节流落库：每 5 行 或 每 1.5 秒
                 now = time.monotonic()
                 if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
                     task.log = _mask_log_str("\n".join(log_lines))
-                    task.heartbeat_at = datetime.utcnow()
                     db.session.commit()
                     last_flush = now
+            # EOF：把最后一段没 \n 收尾的也写进 log
+            if buf:
+                cr_idx = buf.rfind(b"\r")
+                if cr_idx != -1:
+                    buf = buf[cr_idx + 1 :]
+                if buf:
+                    log_lines.append(buf.decode("utf-8", errors="replace"))
             proc.wait()
             task.log = _mask_log_str("\n".join(log_lines))
             task.finished_at = datetime.utcnow()
