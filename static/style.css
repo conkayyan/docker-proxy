@@ -133,6 +133,18 @@ input:focus, select:focus, textarea:focus {
   gap: 0.5rem 1rem;
 }
 .form-grid .full { grid-column: 1 / -1; }
+.form-row-3 {
+  display: grid;
+  grid-template-columns: auto 2fr 2fr;
+  gap: 0.5rem 1rem;
+  align-items: start;
+}
+.form-row-3 label { display: contents; }
+.form-row-3 label > span { margin-bottom: 0.25rem; }
+.form-grid small.hint {
+  margin-top: -0.25rem;
+  color: var(--muted);
+}
 
 .btn {
   display: inline-block;

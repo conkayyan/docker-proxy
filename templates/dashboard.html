@@ -26,29 +26,28 @@
       </select>
     </label>
 
-    <label>
-      <span>源类型</span>
-      <select name="source_type">
-        <option value="docker" selected>docker — 从 registry 拉取</option>
-        <option value="docker-daemon">docker-daemon — 从本地 docker daemon 取</option>
-      </select>
-      <small>docker 填完整路径如 <code>docker.io/library/nginx:1.27</code>；docker-daemon 填本地 image:tag 如 <code>nginx:1.27</code>。</small>
-    </label>
-
-    <label>
-      <span>源镜像</span>
-      <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
-      <small>例如 <code>docker.io/library/nginx:1.27</code>（Docker Hub 官方镜像的完整路径）</small>
-    </label>
-
-    <label>
-      <span>目标镜像（仅 image:tag，不含 registry 地址与 project）</span>
-      <input type="text" name="dest_image" required placeholder="nginx:1.27" />
-      <small>
-        例如 <code>nginx:1.27</code>：将推送到 <code>{所选 Registry.url}/{所选 Registry.project}/nginx:1.27</code>。
-        <code>project</code> 为该 Registry 在「Registry 管理」中配置的命名空间前缀，可独立设置或留空。
-      </small>
-    </label>
+    <div class="full form-row-3">
+      <label>
+        <span>源类型</span>
+        <select name="source_type">
+          <option value="docker" selected>docker</option>
+          <option value="docker-daemon">docker-daemon</option>
+        </select>
+      </label>
+      <label>
+        <span>源镜像</span>
+        <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
+      </label>
+      <label>
+        <span>目标镜像（image:tag）</span>
+        <input type="text" name="dest_image" required placeholder="nginx:1.27" />
+      </label>
+    </div>
+    <small class="full hint">
+      <code>docker</code> 填完整路径如 <code>docker.io/library/nginx:1.27</code>；
+      <code>docker-daemon</code> 填本地 image:tag 如 <code>nginx:1.27</code>。
+      目标只填 image:tag，会拼上所选 Registry 的 url 和 project 前缀。
+    </small>
 
     <label class="checkbox full">
       <input type="checkbox" name="multi_arch" value="1" />
