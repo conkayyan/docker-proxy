@@ -27,6 +27,22 @@
     </label>
 
     <label>
+      <span>源类型</span>
+      <div class="radio-group">
+        <label class="radio">
+          <input type="radio" name="source_type" value="docker" checked />
+          <span>docker（从 registry 拉取）</span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="source_type" value="docker-daemon" />
+          <span>docker-daemon（从本地 docker daemon 取）</span>
+        </label>
+      </div>
+      <small>docker: 填镜像完整路径如 <code>docker.io/library/nginx:1.27</code>。<br>
+            docker-daemon: 填本地 image:tag 如 <code>nginx:1.27</code>，会从运行 skopeo 的同台机器的 docker daemon 取。</small>
+    </label>
+
+    <label>
       <span>源镜像</span>
       <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
       <small>例如 <code>docker.io/library/nginx:1.27</code>（Docker Hub 官方镜像的完整路径）</small>
@@ -74,7 +90,7 @@
       <tr data-task-id="{{ t.id }}" data-status="{{ t.status }}">
         <td>#{{ t.id }}</td>
         <td><span class="badge badge-{{ t.status }} badge-status">{{ t.status }}</span></td>
-        <td class="mono cell-image">{{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image, t.registry.project) }}</td>
+        <td class="mono cell-image">[{{ t.source_type or 'docker' }}] {{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image, t.registry.project) }}</td>
         <td class="cell-created">{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions cell-actions">
           <a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">查看</a>
@@ -167,7 +183,7 @@
             if (createdCell && t.created_at) createdCell.textContent = fmt(t.created_at);
             // 镜像路径
             var imgCell = row.querySelector('.cell-image');
-            if (imgCell) imgCell.textContent = t.source_image + ' → ' + t.registry_url + '/' + t.project_dest;
+            if (imgCell) imgCell.textContent = '[' + (t.source_type || 'docker') + '] ' + t.source_image + ' → ' + t.registry_url + '/' + t.project_dest;
           });
 
           // 自适应轮询节奏

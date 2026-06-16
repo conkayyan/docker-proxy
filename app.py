@@ -141,6 +141,9 @@ class CopyTask(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     registry_id = db.Column(db.Integer, db.ForeignKey("registries.id"), nullable=False)
     source_image = db.Column(db.String(300), nullable=False)
+    # 源类型："docker"（从 registry 拉，docker:// 前缀）或 "docker-daemon"
+    # （从本地 docker daemon 取，docker-daemon: 前缀）。
+    source_type = db.Column(db.String(20), default="docker", nullable=False)
     dest_image = db.Column(db.String(300), nullable=False)
     status = db.Column(db.String(20), default="pending", nullable=False)
     log = db.Column(db.Text, default="", nullable=False)
@@ -324,6 +327,7 @@ def _migrate_columns() -> None:
     stmts = [
         "ALTER TABLE copy_tasks ADD COLUMN heartbeat_at DATETIME",
         "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
+        "ALTER TABLE copy_tasks ADD COLUMN source_type VARCHAR(20) DEFAULT 'docker' NOT NULL",
     ]
     with app.app_context():
         for sql in stmts:
@@ -360,13 +364,26 @@ def _recover_unfinished_tasks() -> None:
             db.session.commit()
 
 
+def _source_url(source_type: str, source_image: str) -> str:
+    """根据源类型拼 skopeo 的 source URL。
+
+    - "docker"          → docker://nginx:1.27（从 registry 拉）
+    - "docker-daemon"   → docker-daemon:nginx:1.27（从本地 docker daemon 取）
+    其它值按 docker 处理，避免脏数据让 _build_command 抛错。
+    """
+    if source_type == "docker-daemon":
+        return f"docker-daemon:{source_image}"
+    return f"docker://{source_image}"
+
+
 def _build_command(task: CopyTask) -> list[str]:
     cmd: list[str] = ["skopeo", "copy"]
     if task.multi_arch:
         cmd.append("--multi-arch=all")
     if not task.registry.verify_tls:
         cmd.append("--dest-tls-verify=false")
-    cmd.append(f"docker://{task.source_image}")
+    src_type = task.source_type or "docker"
+    cmd.append(_source_url(src_type, task.source_image))
     cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
     cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
     return cmd
@@ -1152,6 +1169,10 @@ def copy_create():
     source = (request.form.get("source_image") or "").strip()
     dest = (request.form.get("dest_image") or "").strip()
     multi_arch = request.form.get("multi_arch") in ("1", "on", "true", "yes")
+    source_type = (request.form.get("source_type") or "docker").strip()
+    if source_type not in ("docker", "docker-daemon"):
+        flash(f"不支持的源类型：{source_type}", "error")
+        return redirect(url_for("dashboard"))
     if not source or not dest:
         flash("源镜像和目标镜像不能为空", "error")
         return redirect(url_for("dashboard"))
@@ -1159,6 +1180,7 @@ def copy_create():
     task = CopyTask(
         user_id=current_user.id,
         registry_id=reg.id,
+        source_type=source_type,
         source_image=source,
         dest_image=dest.lstrip("/"),
         multi_arch=multi_arch,
@@ -1283,6 +1305,7 @@ def tasks_recent():
                     {
                         "id": t.id,
                         "status": t.status,
+                        "source_type": t.source_type or "docker",
                         "source_image": t.source_image,
                         "dest_image": t.dest_image,
                         "registry_url": t.registry.url,

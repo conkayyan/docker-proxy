@@ -24,6 +24,7 @@
   </div>
 
   <dl class="kv">
+    <dt>源类型</dt><dd><span class="badge">{{ task.source_type or 'docker' }}</span></dd>
     <dt>源镜像</dt><dd class="mono">{{ task.source_image }}</dd>
     <dt>目标</dt><dd class="mono">{{ task.registry.url }}/{{ project_dest(task.dest_image, task.registry.project) }}</dd>
     <dt>Registry</dt><dd>{{ task.registry.name }}（{{ task.registry.username }}）</dd>
