@@ -259,24 +259,55 @@ class CopyForm(FlaskForm):
 
 task_queue: "Queue[int]" = Queue()
 _worker_started = False
+_worker_thread: "threading.Thread | None" = None
 _worker_lock = threading.Lock()
 
 # 看门狗：worker 必须至少每 HEARTBEAT_TIMEOUT 秒刷新一次 heartbeat_at，
 # 否则 watchdog 会把对应的 running 任务标为 failed 并 SIGTERM 子进程。
-# 默认 30s 心跳超时、10s 巡检一次；可通过环境变量调。
+# 默认 120s 心跳超时（skopeo 推大镜像前几分钟常无日志）、10s 巡检一次；
+# 可通过环境变量调。
 WATCHDOG_INTERVAL_SEC = int(os.environ.get("TASK_WATCHDOG_INTERVAL", "10"))
-HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("TASK_HEARTBEAT_TIMEOUT", "30"))
+HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("TASK_HEARTBEAT_TIMEOUT", "120"))
 
 
 def _ensure_worker() -> None:
-    """惰性启动后台 worker + 看门狗线程（每次进程一个）。"""
-    global _worker_started
+    """惰性启动后台 worker + 看门狗线程（每次进程一个）。
+
+    如果旧的 worker 线程已死（_worker_thread.is_alive() 为 False），会重置
+    _worker_started 并重新拉起 —— 这条路径由 watchdog 触发，用于把"worker
+    线程自己崩了但进程还活着"的情况也覆盖掉。
+    """
+    global _worker_started, _worker_thread
     with _worker_lock:
         if _worker_started:
-            return
-        threading.Thread(target=_worker_loop, args=(app,), daemon=True).start()
+            if _worker_thread is not None and _worker_thread.is_alive():
+                return
+            # 之前标记 started，但线程已死 → 重置，重新拉
+            _worker_started = False
+        _worker_thread = threading.Thread(
+            target=_worker_loop, args=(app,), daemon=True
+        )
+        _worker_thread.start()
         threading.Thread(target=_watchdog_loop, daemon=True).start()
         _worker_started = True
+
+
+def _enqueue_pending_tasks() -> None:
+    """把 DB 里所有 status='pending' 的任务塞回 in-memory 队列。
+
+    task_queue 是进程内的，进程重启 / worker 线程崩了都会丢；而 DB 里的
+    pending 才是真权威。启动时 + watchdog 检测到 worker 死亡时各调一次，
+    避免 pending 任务被永久遗忘。
+    """
+    with app.app_context():
+        pending_ids = [
+            t.id
+            for t in CopyTask.query.filter_by(status="pending")
+            .order_by(CopyTask.id)
+            .all()
+        ]
+    for tid in pending_ids:
+        task_queue.put(tid)
 
 
 def _migrate_columns() -> None:
@@ -649,10 +680,16 @@ def _watchdog_loop() -> None:
     """看门狗线程：周期性扫描并处理心跳超时的任务。
 
     任何异常都不能让这条线程死掉 —— 否则一次失败后整个机制就废了。
+    同时还负责：worker 线程死了就自动拉起 + 把 DB 里的 pending 重新塞回队列。
     """
     while True:
         try:
             _check_hung_tasks()
+            # worker 线程崩了但进程没死的情况：拉起，并补回 queue 里可能丢失的 pending
+            if _worker_thread is None or not _worker_thread.is_alive():
+                _ensure_worker()
+                if task_queue.empty():
+                    _enqueue_pending_tasks()
         except Exception:  # pragma: no cover
             pass
         time.sleep(WATCHDOG_INTERVAL_SEC)
@@ -1218,6 +1255,8 @@ def init_db() -> None:
         db.session.commit()
     # 清理上一次会话遗留的 running 任务（worker 内存里的队列已丢，DB 上的状态得主动改）
     _recover_orphan_running_tasks()
+    # in-memory task_queue 也丢了；把 DB 里 pending 的全部重新塞回队列
+    _enqueue_pending_tasks()
 
 
 init_db()
