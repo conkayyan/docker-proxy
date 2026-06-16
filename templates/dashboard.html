@@ -27,26 +27,30 @@
     </label>
 
     <div class="full form-row-3">
-      <label>
-        <span>源类型</span>
-        <select name="source_type">
+      <div class="field">
+        <label for="source_type">源类型</label>
+        <select id="source_type" name="source_type">
           <option value="docker" selected>docker</option>
           <option value="docker-daemon">docker-daemon</option>
         </select>
-      </label>
-      <label>
-        <span>源镜像</span>
-        <input type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
-      </label>
-      <label>
-        <span>目标镜像（image:tag）</span>
-        <input type="text" name="dest_image" required placeholder="nginx:1.27" />
-      </label>
+      </div>
+      <div class="field">
+        <label for="source_image">源镜像</label>
+        <input id="source_image" type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
+      </div>
+      <div class="field">
+        <label for="dest_image">目标镜像</label>
+        <input id="dest_image" type="text" name="dest_image" required placeholder="nginx:1.27" />
+      </div>
     </div>
     <small class="full hint">
-      <code>docker</code> 填完整路径如 <code>docker.io/library/nginx:1.27</code>；
-      <code>docker-daemon</code> 填本地 image:tag 如 <code>nginx:1.27</code>。
-      目标只填 image:tag，会拼上所选 Registry 的 url 和 project 前缀。
+      <code>docker</code>： 完整路径如 <code>docker.io/(library/|project/)image:tag</code>；
+    </small>
+    <small class="full hint">
+      <code>docker-daemon</code>： 只需填本地的image:tag，如 <code>(library/|project/)image:tag</code>。
+    </small>
+    <small class="full hint">
+      目标镜像只需填写image:tag，提交后会拼上对应的Registry 的 url 和 project 前缀。
     </small>
 
     <label class="checkbox full">
