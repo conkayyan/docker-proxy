@@ -4,5 +4,6 @@ __pycache__/
 instance/app.db
 instance/app.db.bak
 instance/secret.key
+data/                # bind-mount target used by docker-compose.yml
 .DS_Store
 .idea
