@@ -1,65 +1,67 @@
 # docker-proxy
 
-一个基于 Flask 的小型工具：用 Web 登录后，把远端镜像通过 `skopeo copy` 推到目标 Harbor/Registry。
-目标仓库的用户名/密码保存在本地 SQLite 中（Fernet 加密）。
+> English | [中文](./README.zh.md)
 
-## 功能
+A small Flask-based tool: log in via the web UI, then push remote images to a target Harbor/Registry through `skopeo copy`.
+Target registry credentials are stored locally in SQLite (Fernet-encrypted).
 
-- 本地账号登录（SQLite，密码 `werkzeug` 哈希，**无注册入口，私有部署**）
-- 在 Web 上管理多个目标 Registry（地址 + 用户名 + 密码，加密落库）
-- 表单提交源镜像 + 目标镜像 + 目标 Registry，后台 worker 调用 `skopeo copy`
-- 实时查看任务状态与日志（前端轮询）
+## Features
 
-## 依赖
+- Local account login (SQLite, passwords hashed with `werkzeug`, **no signup endpoint, intended for private deployment**)
+- Manage multiple target Registries from the web UI (address + username + password, encrypted at rest)
+- Submit source image + destination image + target Registry via a form; a background worker invokes `skopeo copy`
+- View task status and logs in real time (frontend polling)
+
+## Requirements
 
 - Python 3.10+
-- `skopeo`（系统命令，需 `which skopeo` 可用；macOS 可 `brew install skopeo`）
+- `skopeo` (system command, `which skopeo` must succeed; on macOS use `brew install skopeo`)
 
-## 启动
+## Quick Start
 
-### 方式 A：本地直接跑
+### Option A: Run locally
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 可选：自定义 session 密钥；不设则每次启动随机（重启后旧 session 失效）
+# Optional: set a custom session key; if unset, a random one is generated per start (old sessions invalidated on restart)
 export SECRET_KEY='change-me'
 
 python app.py
-# 浏览器打开 http://127.0.0.1:5000
+# Open http://127.0.0.1:5000 in your browser
 ```
 
-### 方式 B：Docker（推荐私有部署）
+### Option B: Docker (recommended for private deployment)
 
 ```bash
 docker compose up -d --build
-# 浏览器打开 http://localhost:5000
-# 数据持久化在 ./data/ 目录（SQLite + Fernet key）
+# Open http://localhost:5000 in your browser
+# Data is persisted in ./data/ (SQLite + Fernet key)
 ```
 
-镜像基于 `python:3.11-slim`，apt 装 skopeo；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。
+The image is based on `python:3.11-slim`, installs skopeo via apt, runs as a non-root user (uid 1000), and includes a healthcheck (probes `/login` every 30s).
 
-环境变量（docker-compose.yml 里改）：
+Environment variables (edit in `docker-compose.yml`):
 
-| 变量 | 用途 | 默认 |
+| Variable | Purpose | Default |
 | --- | --- | --- |
-| `SECRET_KEY` | Flask session 密钥 | 随机（重启失效） |
-| `HARBOR_PROJECT` | 新建 Registry 时 project 字段的默认值 | `docker-proxy` |
+| `SECRET_KEY` | Flask session key | Random (invalidated on restart) |
+| `HARBOR_PROJECT` | Default value for the `project` field when creating a new Registry | `docker-proxy` |
 
-## 首次启动会自动
+## On first startup
 
-- 在 `instance/`（本地）或 `/app/instance`（容器）下创建 SQLite 数据库 `app.db`
-- 生成 Fernet 密钥 `secret.key`（用于加密 Registry 密码）
-- **创建默认账号 `admin` / `admin123`**（如果不存在的话；idempotent）
+- Creates the SQLite database `app.db` under `instance/` (local) or `/app/instance` (container)
+- Generates a Fernet key `secret.key` (used to encrypt Registry passwords)
+- **Creates the default account `admin` / `admin123`** (if it does not exist; idempotent)
 
-> 默认密码是固定的，部署到非私网环境前请：
-> 1. 改 `SECRET_KEY` 为随机字符串（建议 64+ 字符 hex）
-> 2. 在「我的账号」里把 `admin` 的密码改了，或在 UI 里建新管理员后把 `admin` 删了
+> The default password is fixed. Before deploying to anything other than a private network:
+> 1. Change `SECRET_KEY` to a random string (64+ hex chars recommended)
+> 2. Change the `admin` password from "My Account", or create a new admin in the UI and delete `admin`
 
-## 命令映射
+## Command mapping
 
-Web 表单字段 → 最终执行的 `skopeo` 命令：
+Web form fields → the actual `skopeo` command executed:
 
 ```
 skopeo copy [--dest-tls-verify=false] \
@@ -68,30 +70,30 @@ skopeo copy [--dest-tls-verify=false] \
   --dest-creds <username>:<password>
 ```
 
-`registry.project` 在「Registry 管理 → 新增/编辑」中为每个 Registry 单独设置，留空则不追加前缀。
-新建 Registry 时表单的默认值取自环境变量 `HARBOR_PROJECT`（缺省 `docker-proxy`）。
+`registry.project` is configured per-Registry under "Registry Management → New/Edit"; leave empty to omit the prefix.
+The default value when creating a new Registry comes from the `HARBOR_PROJECT` environment variable (defaults to `docker-proxy`).
 
-| 表单输入 | 实际执行 |
+| Form input | Actual command |
 | --- | --- |
-| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
+| Source: `docker.io/library/nginx:1.27`<br>Destination: `nginx:1.27`<br>Registry: `harbor.company.local`, project: `docker-proxy` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
 
-> **目标镜像的命名规范**：
-> - 目标只填 `<image>:<tag>`，**不要带** `library/` 这类 Docker Hub 的 namespace 前缀。
-> - 完整路径由 app 拼成 `<registry.url>/<registry.project>/<image>:<tag>`，与 ACR / Harbor 等主流 registry 的「命名空间/仓库:tag」结构一致。
-> - 如果目标镜像已以 `<project>/` 开头（例如用户复制时带上了），app 不会重复追加。
+> **Destination image naming convention**:
+> - Use only `<image>:<tag>` for the destination; **do not** include Docker Hub namespace prefixes such as `library/`.
+> - The full path is composed by the app as `<registry.url>/<registry.project>/<image>:<tag>`, matching the "namespace/repo:tag" structure used by ACR, Harbor, and other mainstream registries.
+> - If the destination image already starts with `<project>/` (e.g. copied by the user), the app will not duplicate the prefix.
 
-> **修改默认 project**：在 Registry 详情中直接改 `项目路径前缀` 字段；改完只影响该 Registry。
-> **设置所有新 Registry 的默认值**：
+> **Change the default project**: edit the `Project path prefix` field in the Registry detail page; the change only affects that Registry.
+> **Set the default for all new Registries**:
 > ```bash
-> export HARBOR_PROJECT=my-team     # 新建 Registry 时 project 默认填 my-team
+> export HARBOR_PROJECT=my-team     # New Registries default to project = my-team
 > ```
-> 如果目标镜像已以 `<project>/` 开头（例如用户复制时带上了），不会重复追加。
+> If the destination image already starts with `<project>/`, the prefix is not duplicated.
 
-## 目录
+## Layout
 
 ```
-app.py                # Flask 主程序：模型、路由、worker
-templates/            # Jinja2 模板
-static/style.css      # 基础样式
-instance/             # 运行时生成：SQLite + Fernet key（加入 .gitignore）
+app.py                # Flask main program: models, routes, worker
+templates/            # Jinja2 templates
+static/style.css      # Base styles
+instance/             # Generated at runtime: SQLite + Fernet key (add to .gitignore)
 ```
