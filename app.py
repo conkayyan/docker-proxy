@@ -42,7 +42,7 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from flask_wtf import FlaskForm
-from wtforms import BooleanField, IntegerField, PasswordField, StringField, SubmitField
+from wtforms import BooleanField, IntegerField, PasswordField, SelectField, StringField, SubmitField
 from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -163,7 +163,7 @@ class CopyTask(db.Model):
     log = db.Column(db.Text, default="", nullable=False)
     error = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
-    multi_arch = db.Column(db.Boolean, default=False, nullable=False)
+    multi_arch = db.Column(db.Boolean, default=True, nullable=False)
     # --retry-times N：传给 skopeo copy；网络抖动时重试 0~10 次。
     # 3 是 skopeo 自己的默认值；这里也用 3，让 UI 上"不改 = 默认"的语义清晰。
     retry_times = db.Column(db.Integer, default=3, nullable=False)
@@ -265,9 +265,11 @@ class CopyForm(FlaskForm):
         validators=[DataRequired()],
         description=_l("e.g. nginx:1.27 (only image:tag; project is auto-appended by the selected Registry)"),
     )
-    multi_arch = BooleanField(
+    multi_arch = SelectField(
         _l("Multi-arch"),
-        description=_l("Push the full multi-arch manifest list (amd64 / arm64 / armv7)."),
+        choices=[("1", _l("Yes")), ("0", _l("No"))],
+        default="1",
+        description=_l("Push the full multi-arch manifest list (amd64 / arm64 / armv7). Default Yes."),
     )
     # --retry-times N：传给 skopeo copy，网络/registry 抖动时自动重试。
     # skopeo 自身默认就是 3；这里默认 3 保持一致，0 表示不重试。
@@ -1282,7 +1284,7 @@ def copy_create():
 
     source = (request.form.get("source_image") or "").strip()
     dest = (request.form.get("dest_image") or "").strip()
-    multi_arch = request.form.get("multi_arch") in ("1", "on", "true", "yes")
+    multi_arch = (request.form.get("multi_arch") or "1") == "1"
     source_type = (request.form.get("source_type") or "docker").strip()
     if source_type not in ("docker", "docker-daemon"):
         flash(_("Unsupported source type: %(t)s", t=source_type), "error")
