@@ -43,8 +43,8 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from flask_wtf import FlaskForm
-from wtforms import BooleanField, IntegerField, PasswordField, SelectField, StringField, SubmitField
-from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
+from wtforms import BooleanField, PasswordField, StringField, SubmitField
+from wtforms.validators import DataRequired, EqualTo, Length, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from i18n import (
@@ -161,11 +161,6 @@ class CopyTask(db.Model):
     log = db.Column(db.Text, default="", nullable=False)
     error = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
-    multi_arch = db.Column(db.Boolean, default=True, nullable=False)
-    # 历史遗留字段：早期版本里传给 skopeo copy 的 --retry-times（默认 3）。
-    # 当前实现走 docker CLI，docker daemon 自带重试；这里保留列仅为兼容老 DB 行，
-    # 写入/读取时一律忽略。
-    retry_times = db.Column(db.Integer, default=3, nullable=False)
     # 推完后是否 `docker rmi` 删掉本地副本（source + 临时 tag）。
     # 默认 True —— 大多数场景是「拉 → 推 → 清」的临时操作。
     # 取消勾选则保留本地镜像，适合「我自己 build 的镜像只想顺便推一份到远端」。
@@ -273,20 +268,6 @@ class CopyForm(FlaskForm):
         default=True,
         description=_l("Run `docker rmi` to delete the source image and the temporary target tag locally after a successful push. Uncheck to keep your local images (e.g. for self-built images you also use elsewhere)."),
     )
-    multi_arch = SelectField(
-        _l("Multi-arch"),
-        choices=[("1", _l("Yes")), ("0", _l("No"))],
-        default="1",
-        description=_l("Push the full multi-arch manifest list (amd64 / arm64 / armv7). Default Yes."),
-    )
-    # 历史遗留：早期 skopeo 时代的 --retry-times 字段。docker CLI 自身有重试，
-    # 表单里不再展示，这里只保留字段以免 WTForms 校验老任务行时炸。
-    retry_times = IntegerField(
-        _l("Retry times"),
-        default=3,
-        validators=[NumberRange(min=0, max=10)],
-        description=_l("Legacy field; docker push handles retries itself."),
-    )
     submit = SubmitField(_l("Start Copy"))
 
 
@@ -362,14 +343,16 @@ def _migrate_columns() -> None:
     stmts = [
         "ALTER TABLE copy_tasks ADD COLUMN heartbeat_at DATETIME",
         "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
-        "ALTER TABLE copy_tasks ADD COLUMN retry_times INTEGER DEFAULT 3 NOT NULL",
         "ALTER TABLE copy_tasks ADD COLUMN cleanup BOOLEAN DEFAULT 1 NOT NULL",
     ]
-    # 清理历史遗留列：source_type 在合并 source 类型后已无任何代码读取。
+    # 清理历史遗留列：source_type / multi_arch / retry_times 都是 skopeo 时代的字段，
+    # 切到 docker CLI 后已无任何代码读取。
     # SQLite ≥ 3.35.0（2021-03）支持 DROP COLUMN；旧版本会抛错，被 try/except 吞掉，
-    # 不影响启动 —— 老库只是多一列没人用的脏数据。
+    # 不影响启动 —— 老库只是多几列没人用的脏数据。
     drop_stmts = [
         "ALTER TABLE copy_tasks DROP COLUMN source_type",
+        "ALTER TABLE copy_tasks DROP COLUMN multi_arch",
+        "ALTER TABLE copy_tasks DROP COLUMN retry_times",
     ]
     with app.app_context():
         for sql in stmts:
@@ -1346,30 +1329,19 @@ def copy_create():
 
     source = (request.form.get("source_image") or "").strip()
     dest = (request.form.get("dest_image") or "").strip()
-    multi_arch = (request.form.get("multi_arch") or "1") == "1"
     # HTML checkbox 不勾时浏览器根本不会提交字段，所以缺失即代表 False。
     # cleanup=False → 不在尾部 rmi，保留用户本地镜像。
     cleanup = request.form.get("cleanup") in ("1", "true", "on")
     if not source or not dest:
         flash(_("Source and destination images cannot be empty"), "error")
         return redirect(url_for("dashboard"))
-    # --retry-times：表单给的就是整数串；脏值兜底为默认 3，再夹到 [0,10]。
-    # 直接读 request.form 而不走 WTForms 校验，因为这个表单字段不是 submit 必备的
-    # （dashboard 上始终渲染一个 number input，用户填了才传），先宽松再夹紧。
-    try:
-        retry_times = int(request.form.get("retry_times", "3"))
-    except (TypeError, ValueError):
-        retry_times = 3
-    retry_times = max(0, min(10, retry_times))
 
     task = CopyTask(
         user_id=current_user.id,
         registry_id=reg.id,
         source_image=source,
         dest_image=dest.lstrip("/"),
-        multi_arch=multi_arch,
         cleanup=cleanup,
-        retry_times=retry_times,
         status="pending",
     )
     db.session.add(task)
