@@ -17,21 +17,19 @@
       <a href="{{ url_for('account') }}">{{ _("My Account") }}</a>
       <a href="{{ url_for('logout') }}">{{ _("Log out (%(name)s)", name=current_user.username) }}</a>
       <span class="lang-switch">
-        {% if get_locale() == 'zh' %}
-          <a href="{{ url_for('set_lang', code='en') }}">English</a> | <strong>中文</strong>
-        {% else %}
-          <strong>English</strong> | <a href="{{ url_for('set_lang', code='zh') }}">中文</a>
-        {% endif %}
+        <select class="lang-select" data-lang-select aria-label="Language">
+          <option value="en" {% if get_locale() == 'en' %}selected{% endif %}>English</option>
+          <option value="zh" {% if get_locale() == 'zh' %}selected{% endif %}>中文</option>
+        </select>
       </span>
     </nav>
   </header>
   {% else %}
   <div class="lang-switch lang-switch-anon">
-    {% if get_locale() == 'zh' %}
-      <a href="{{ url_for('set_lang', code='en') }}">English</a> | <strong>中文</strong>
-    {% else %}
-      <strong>English</strong> | <a href="{{ url_for('set_lang', code='zh') }}">中文</a>
-    {% endif %}
+    <select class="lang-select" data-lang-select aria-label="Language">
+      <option value="en" {% if get_locale() == 'en' %}selected{% endif %}>English</option>
+      <option value="zh" {% if get_locale() == 'zh' %}selected{% endif %}>中文</option>
+    </select>
   </div>
   {% endif %}
 
@@ -52,5 +50,21 @@
   <footer class="footer">
     <small>&copy; {{ current_year }} docker-proxy · {{ _("Local tool") }}</small>
   </footer>
+
+  <script>
+    // 语言选择：change 时跳转到 /lang/<code>?next=<current>
+    (function () {
+      var langBase = {{ url_for('set_lang', code='')|tojson }};
+      document.querySelectorAll('[data-lang-select]').forEach(function (sel) {
+        sel.addEventListener('change', function () {
+          var nextPath = window.location.pathname + window.location.search;
+          // 去掉 next 里的 ?lang= 参数，避免回跳后又被覆盖
+          nextPath = nextPath.replace(/([?&])lang=[^&]*&?/g, '$1').replace(/[?&]$/, '');
+          window.location.href = langBase + encodeURIComponent(sel.value) +
+                                 '?next=' + encodeURIComponent(nextPath);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

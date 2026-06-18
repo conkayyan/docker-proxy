@@ -31,19 +31,28 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 1rem;
   padding: 0.75rem 1.5rem;
   background: var(--card);
   border-bottom: 1px solid var(--border);
 }
+.topbar .brand { flex-shrink: 0; }
 .topbar .brand a { color: var(--text); font-weight: 700; }
-.topbar nav a { margin-left: 1rem; color: var(--muted); }
+.topbar nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  min-width: 0;
+}
+.topbar nav a { color: var(--muted); }
 .topbar nav a:hover { color: var(--text); }
 
 .lang-switch {
-  margin-left: 1rem;
   color: var(--muted);
   font-size: 0.875rem;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .lang-switch a { color: var(--muted); }
 .lang-switch a:hover { color: var(--primary); }
@@ -51,8 +60,28 @@ a:hover { text-decoration: underline; }
 .lang-switch-anon {
   text-align: right;
   padding: 0.5rem 1.5rem 0;
-  margin-left: 0;
 }
+.lang-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.25rem 1.6rem 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+  width: auto;
+  max-width: 110px;
+  box-sizing: border-box;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%236b7280' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 8px 5px;
+}
+.lang-select:hover { border-color: var(--primary); }
+.lang-select:focus { outline: 2px solid var(--primary); outline-offset: 1px; }
 
 .container {
   max-width: 980px;
