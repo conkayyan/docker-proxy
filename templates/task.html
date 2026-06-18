@@ -126,14 +126,15 @@
             dot.parentNode.removeChild(dot);
           }
           logPre.scrollTop = logPre.scrollHeight;
-          // 活跃 2s，终态 10s
-          var active = d.status === 'pending' || d.status === 'running';
-          setTimeout(tick, active ? 2000 : 10000);
+          // 终态（success / failed）意味着任务已结束，数据不会再变 —— 停止轮询。
+          // pending / running 继续每 2s 拉一次。
+          if (d.status !== 'pending' && d.status !== 'running') return;
+          setTimeout(tick, 2000);
         })
         .catch(function () { setTimeout(tick, 5000); });
     }
 
-    // 立即起一次轮询（不管初始状态），活跃状态每 2s，终态每 10s
+    // 立即起一次轮询；如果初始状态就是终态，进 tick 后会自己停掉
     setTimeout(tick, 200);
     logPre.scrollTop = logPre.scrollHeight;
   })();
