@@ -42,8 +42,8 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from flask_wtf import FlaskForm
-from wtforms import BooleanField, PasswordField, StringField, SubmitField
-from wtforms.validators import DataRequired, EqualTo, Length, Optional
+from wtforms import BooleanField, IntegerField, PasswordField, StringField, SubmitField
+from wtforms.validators import DataRequired, EqualTo, Length, NumberRange, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from i18n import (
@@ -161,6 +161,9 @@ class CopyTask(db.Model):
     error = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
     multi_arch = db.Column(db.Boolean, default=False, nullable=False)
+    # --retry-times N：传给 skopeo copy；网络抖动时重试 0~10 次。
+    # 3 是 skopeo 自己的默认值；这里也用 3，让 UI 上"不改 = 默认"的语义清晰。
+    retry_times = db.Column(db.Integer, default=3, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
@@ -263,6 +266,14 @@ class CopyForm(FlaskForm):
         _l("Multi-arch (--multi-arch all)"),
         description=_l("Push the full manifest list (amd64 / arm64 / armv7, etc). Recommended when pushing multi-arch images like nginx from an ARM Mac."),
     )
+    # --retry-times N：传给 skopeo copy，网络/registry 抖动时自动重试。
+    # skopeo 自身默认就是 3；这里默认 3 保持一致，0 表示不重试。
+    retry_times = IntegerField(
+        _l("Retry times (--retry-times)"),
+        default=3,
+        validators=[NumberRange(min=0, max=10)],
+        description=_l("How many times skopeo retries on transient errors (network blip, registry 5xx, etc). 0 disables retries; max 10. Default 3 matches skopeo's own default."),
+    )
     submit = SubmitField(_l("Start Copy"))
 
 
@@ -339,6 +350,7 @@ def _migrate_columns() -> None:
         "ALTER TABLE copy_tasks ADD COLUMN heartbeat_at DATETIME",
         "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
         "ALTER TABLE copy_tasks ADD COLUMN source_type VARCHAR(20) DEFAULT 'docker' NOT NULL",
+        "ALTER TABLE copy_tasks ADD COLUMN retry_times INTEGER DEFAULT 3 NOT NULL",
     ]
     with app.app_context():
         for sql in stmts:
@@ -397,6 +409,12 @@ def _build_command(task: CopyTask) -> list[str]:
     cmd: list[str] = ["skopeo", "copy"]
     if task.multi_arch:
         cmd.append("--multi-arch=all")
+    # --retry-times 显式追加（哪怕等于 skopeo 默认 3 也保留），
+    # 这样 UI 上看到的命令与运行时一致；也方便"等于 0"的边界一眼可见。
+    # 用 is not None 兜底：老库 row 可能 NULL（ALTER 加列时若默认没回填），
+    # 这种就当 skopeo 默认 3；显式 0 走 max(0, …) 保留。
+    rt = task.retry_times if task.retry_times is not None else 3
+    cmd.extend(["--retry-times", str(max(0, int(rt)))])
     if not task.registry.verify_tls:
         cmd.append("--dest-tls-verify=false")
     # "docker" 走 docker pull → docker-daemon 路径；只有 "docker-daemon"
@@ -1269,6 +1287,14 @@ def copy_create():
     if not source or not dest:
         flash(_("Source and destination images cannot be empty"), "error")
         return redirect(url_for("dashboard"))
+    # --retry-times：表单给的就是整数串；脏值兜底为默认 3，再夹到 [0,10]。
+    # 直接读 request.form 而不走 WTForms 校验，因为这个表单字段不是 submit 必备的
+    # （dashboard 上始终渲染一个 number input，用户填了才传），先宽松再夹紧。
+    try:
+        retry_times = int(request.form.get("retry_times", "3"))
+    except (TypeError, ValueError):
+        retry_times = 3
+    retry_times = max(0, min(10, retry_times))
 
     task = CopyTask(
         user_id=current_user.id,
@@ -1277,6 +1303,7 @@ def copy_create():
         source_image=source,
         dest_image=dest.lstrip("/"),
         multi_arch=multi_arch,
+        retry_times=retry_times,
         status="pending",
     )
     db.session.add(task)

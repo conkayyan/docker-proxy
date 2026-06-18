@@ -79,6 +79,8 @@ docker compose up -d --build
 | `SECRET_KEY` | Flask session 密钥 | 随机（重启失效） |
 | `HARBOR_PROJECT` | 新建 Registry 时 project 字段的默认值 | `docker-proxy` |
 | `DOCKER_HOST` | 覆盖 `docker` CLI 用的 daemon 地址（如 `tcp://docker.example.com:2375`）。不设就走 `/var/run/docker.sock`。 | 未设 |
+| `SKOPEO_HTTP2` | 透传给 skopeo，启用 HTTP/2 多路复用；对支持 HTTP/2 的 registry 吞吐显著提升。 | 未设（skopeo 自定） |
+| `SKOPEO_MAX_CONCURRENT_DOWNLOADS` | 透传给 skopeo，单次 copy 并行下载的 blob 数。skopeo 默认 4；内网高速环境可拉到 10 左右加速大镜像。 | 未设（skopeo 默认 4） |
 
 ## 首次启动会自动
 
@@ -102,12 +104,14 @@ docker compose up -d --build
 
 ```
 docker pull <source_image>
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
   docker-daemon:<source_image> \
   docker://<registry.url>/<registry.project>/<dest_image> \
   --dest-creds <username>:<password>
 docker rmi <source_image>   # 清理；这一步失败不影响任务成败
 ```
+
+`--retry-times <N>` 在表单上可配（默认 `3`，范围 `0–10`；`0` 即不重试）。控制 skopeo 在网络抖动 / registry 5xx 等瞬时错误时的重试次数；默认值与 skopeo 自身一致 —— 想更早硬失败就调小，registry 不稳就调大。
 
 中间的 `docker pull` 让这个模式很有用：可以直接复用宿主 `~/.docker/config.json` 里配好的镜像仓库镜像 / 鉴权；最后 `docker rmi` 顺手清掉本地副本，不挤占宿主磁盘。`docker pull` 失败的话后面 skopeo / rmi 都跳过（本地没图可推，也没东西可清）。
 
@@ -116,18 +120,20 @@ docker rmi <source_image>   # 清理；这一步失败不影响任务成败
 只跑一条命令。镜像必须已经存在于宿主 docker daemon 里 —— worker 不会帮你 `docker pull`，也**不会**在推完之后 `docker rmi`（那是你的镜像，不是我们临时拉的）：
 
 ```
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
   docker-daemon:<source_image> \
   docker://<registry.url>/<registry.project>/<dest_image> \
   --dest-creds <username>:<password>
 ```
+
+`--retry-times <N>` 在表单上可配（默认 `3`，范围 `0–10`；`0` 即不重试）。控制 skopeo 在网络抖动 / registry 5xx 等瞬时错误时的重试次数；默认值与 skopeo 自身一致 —— 想更早硬失败就调小，registry 不稳就调大。
 
 `registry.project` 在「Registry 管理 → 新增/编辑」中为每个 Registry 单独设置，留空则不追加前缀。
 新建 Registry 时表单的默认值取自环境变量 `HARBOR_PROJECT`（缺省 `docker-proxy`）。
 
 | 表单输入 | 实际流水线（`docker`） |
 | --- | --- |
-| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
+| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy --retry-times 3 docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
 
 任务详情页会把整条流水线（含每条命令）按行展开，凭证已掩码。
 

@@ -45,6 +45,10 @@ services:
       HARBOR_PROJECT: "docker-proxy"
       # 用远端 docker daemon 代替挂 socket：注释掉 socket 那行 + 取消下面注释
       # DOCKER_HOST: "tcp://docker.example.com:2375"
+      # 启用 HTTP/2，多路复用可显著提升与 registry 之间的吞吐
+      SKOPEO_HTTP2: "true"
+      # 单次 copy 并发下载的 blob 数；skopeo 默认 4，内网高速环境可拉到 10
+      SKOPEO_MAX_CONCURRENT_DOWNLOADS: "10"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/login', timeout=3)"]
       interval: 30s

@@ -79,6 +79,8 @@ Environment variables (edit in `docker-compose.yml`):
 | `SECRET_KEY` | Flask session key | Random (invalidated on restart) |
 | `HARBOR_PROJECT` | Default value for the `project` field when creating a new Registry | `docker-proxy` |
 | `DOCKER_HOST` | Override the docker daemon URL used by the `docker` CLI (e.g. `tcp://docker.example.com:2375`). When unset, the CLI talks to `/var/run/docker.sock`. | unset |
+| `SKOPEO_HTTP2` | Passed to skopeo; enables HTTP/2 multiplexing for substantially better throughput against registries that support it. | unset (skopeo decides) |
+| `SKOPEO_MAX_CONCURRENT_DOWNLOADS` | Passed to skopeo; number of blobs fetched in parallel per copy. Skopeo default is 4; raise to ~10 on fast LANs to speed up large images. | unset (skopeo default 4) |
 
 ## On first startup
 
@@ -102,12 +104,14 @@ For each task, the worker runs three commands in sequence:
 
 ```
 docker pull <source_image>
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
   docker-daemon:<source_image> \
   docker://<registry.url>/<registry.project>/<dest_image> \
   --dest-creds <username>:<password>
 docker rmi <source_image>   # cleanup; failure here does NOT fail the task
 ```
+
+`--retry-times <N>` is exposed on the form (default `3`, range `0–10`; `0` disables retries). It controls how many times skopeo retries on transient errors (network blips, registry 5xx). The default matches skopeo's own default — set it lower if you want a faster hard-fail, higher if your registry is flaky.
 
 The intermediate `docker pull` is what makes this mode useful: it leverages any local registry mirror / auth you have configured in the host's `~/.docker/config.json`, and the cleanup step keeps the host's docker daemon from filling up. If `docker pull` fails, the skopeo step and the cleanup are skipped (no point in copying from a non-existent local image).
 
@@ -116,18 +120,20 @@ The intermediate `docker pull` is what makes this mode useful: it leverages any 
 Runs only one command. The image must already exist in the host's docker daemon — the worker does **not** pull it for you and does **not** delete it afterward (it's your image, not ours):
 
 ```
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
   docker-daemon:<source_image> \
   docker://<registry.url>/<registry.project>/<dest_image> \
   --dest-creds <username>:<password>
 ```
+
+`--retry-times <N>` is exposed on the form (default `3`, range `0–10`; `0` disables retries). It controls how many times skopeo retries on transient errors (network blips, registry 5xx). The default matches skopeo's own default — set it lower if you want a faster hard-fail, higher if your registry is flaky.
 
 `registry.project` is configured per-Registry under "Registry Management → New/Edit"; leave empty to omit the prefix.
 The default value when creating a new Registry comes from the `HARBOR_PROJECT` environment variable (defaults to `docker-proxy`).
 
 | Form input | Actual pipeline (`docker`) |
 | --- | --- |
-| Source: `docker.io/library/nginx:1.27`<br>Destination: `nginx:1.27`<br>Registry: `harbor.company.local`, project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
+| Source: `docker.io/library/nginx:1.27`<br>Destination: `nginx:1.27`<br>Registry: `harbor.company.local`, project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy --retry-times 3 docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
 
 The Task detail page shows the full pipeline with each command on its own line; credentials are masked.
 

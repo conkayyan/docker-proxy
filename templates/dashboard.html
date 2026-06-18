@@ -60,6 +60,14 @@
       </small>
     </label>
 
+    <div class="field" style="max-width:12rem;">
+      <label for="retry_times">{{ _("Retry times (--retry-times)") }}</label>
+      <input id="retry_times" type="number" name="retry_times" value="3" min="0" max="10" step="1" />
+      <small class="hint">
+        {{ _("0 = no retries; max 10. Default 3 matches skopeo's own default.") }}
+      </small>
+    </div>
+
     <div class="full">
       <button type="submit" class="btn primary">{{ _("Start Copy") }}</button>
     </div>
