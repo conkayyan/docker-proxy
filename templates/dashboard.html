@@ -1,73 +1,27 @@
 {% extends "base.html" %}
 {% block title %}{{ _("Image Copy · docker-proxy") }}{% endblock %}
 {% block extra_head %}
-{# Page-scoped CSS for the skopeo options section. Inline so it applies
+{# Page-scoped CSS for the copy form. Inline so it applies
    regardless of whether the browser has cached an older style.css. #}
 <style>
-.options-section {
-  border: 1px solid #e1e6ee;
-  border-radius: 6px;
-  padding: 0.4rem 1rem 0.9rem;
-  margin: 0;
-  background: #f8fafc;
-}
-.options-section > .opt-legend {
-  font-weight: 600;
-  font-size: 0.85rem;
-  color: #475569;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0 0.4rem;
-  background: #f8fafc;
-}
-.opt-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem 0.8rem;
-  padding: 0.6rem 0 0.2rem;
-}
-.opt-row > label.opt-label {
+.checkbox-row {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  font-weight: 600;
-  margin: 0;
-  min-width: 8rem;
-  white-space: nowrap;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.2rem;
+  font-weight: 500;
+  cursor: pointer;
 }
-.opt-row > input[type="number"],
-.opt-row > select {
-  width: auto;
-  min-width: 4rem;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid #e1e6ee;
-  border-radius: 6px;
-  background: #fff;
-  font-size: 0.95rem;
-  font-family: inherit;
-  color: #1f2937;
+.checkbox-row input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
 }
-.opt-row > .opt-hint {
-  flex: 0 0 100%;
-  margin: 0.25rem 0 0 0;
+.hint-checkbox {
+  margin: 0 0 0.4rem 1.5rem;
   color: #6b7280;
   font-size: 0.85rem;
   line-height: 1.5;
-}
-.opt-row > .opt-hint code,
-code.flag {
-  display: inline-block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.82em;
-  color: #475569;
-  background: #fff;
-  border: 1px solid #e1e6ee;
-  border-radius: 4px;
-  padding: 1px 7px;
-  margin-right: 0.35rem;
-  line-height: 1.5;
-  white-space: nowrap;
 }
 </style>
 {% endblock %}
@@ -75,9 +29,9 @@ code.flag {
 <div class="card">
   <h1>{{ _("Image Copy") }}</h1>
 
-  {% if not skopeo_ok %}
+  {% if not docker_ok %}
   <div class="alert alert-warn">
-    {{ _("⚠️ `skopeo` command not found; tasks will fail immediately on submit. macOS: %(install)s.", install="<code>brew install skopeo</code>")|safe }}
+    {{ _("⚠️ `docker` command not found; tasks will fail immediately on submit. Install Docker or set DOCKER_HOST for a remote daemon.") }}
   </div>
   {% endif %}
 
@@ -96,14 +50,7 @@ code.flag {
       </select>
     </label>
 
-    <div class="full form-row-3">
-      <div class="field">
-        <label for="source_type">{{ _("Source type") }}</label>
-        <select id="source_type" name="source_type">
-          <option value="docker" selected>docker</option>
-          <option value="docker-daemon">docker-daemon</option>
-        </select>
-      </div>
+    <div class="full form-row-2">
       <div class="field">
         <label for="source_image">{{ _("Source image") }}</label>
         <input id="source_image" type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
@@ -113,42 +60,21 @@ code.flag {
         <input id="dest_image" type="text" name="dest_image" required placeholder="nginx:1.27" />
       </div>
     </div>
+    <div class="full">
+      <label class="checkbox-row">
+        <input type="checkbox" id="cleanup" name="cleanup" value="1" checked />
+        <span>{{ _("Cleanup local copy after push") }}</span>
+      </label>
+      <p class="hint hint-checkbox">
+        {{ _("Runs `docker rmi` to delete the source image and the temporary target tag locally after a successful push. Uncheck to keep your local images (e.g. for self-built images you also use elsewhere).") }}
+      </p>
+    </div>
     <small class="full hint">
-      {{ _("`docker`: full path like `docker.io/(library/|project/)image:tag`;") }}
-    </small>
-    <small class="full hint">
-      {{ _("`docker-daemon`: only the local image:tag, e.g. `(library/|project/)image:tag`.") }}
+      {{ _("Source must be a full image:tag, e.g. `docker.io/library/nginx:1.27`. The worker runs `docker pull` first; already-local images are detected and skipped automatically.") }}
     </small>
     <small class="full hint">
       {{ _("Destination only needs image:tag; the selected Registry's URL and project prefix are appended on submit.") }}
     </small>
-
-    <div class="full">
-      <div class="options-section">
-        <div class="opt-legend">{{ _("Skopeo options") }}</div>
-
-        <div class="opt-row">
-          <label class="opt-label" for="multi_arch">{{ _("Multi-arch") }}</label>
-          <select id="multi_arch" name="multi_arch">
-            <option value="1" selected>{{ _("Yes") }}</option>
-            <option value="0">{{ _("No") }}</option>
-          </select>
-          <p class="opt-hint">
-            <code class="flag">--multi-arch=all</code>
-            {{ _("push the full manifest list (amd64 / arm64 / armv7, etc). Recommended for multi-arch images like nginx from an ARM Mac. Default Yes.") }}
-          </p>
-        </div>
-
-        <div class="opt-row">
-          <label class="opt-label" for="retry_times">{{ _("Retry times") }}</label>
-          <input id="retry_times" type="number" name="retry_times" value="3" min="0" max="10" step="1" />
-          <p class="opt-hint">
-            <code class="flag">--retry-times</code>
-            {{ _("how many times skopeo retries on transient errors (network blip, registry 5xx). 0 = no retries; max 10. Default 3 matches skopeo's own default.") }}
-          </p>
-        </div>
-      </div>
-    </div>
 
     <div class="full">
       <button type="submit" class="btn primary">{{ _("Start Copy") }}</button>
@@ -175,7 +101,7 @@ code.flag {
       <tr data-task-id="{{ t.id }}" data-status="{{ t.status }}">
         <td>#{{ t.id }}</td>
         <td><span class="badge badge-{{ t.status }} badge-status">{{ t.status }}</span></td>
-        <td class="mono cell-image">[{{ t.source_type or 'docker' }}] {{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image, t.registry.project) }}</td>
+        <td class="mono cell-image">{{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image, t.registry.project) }}</td>
         <td class="cell-created">{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions cell-actions">
           <a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">{{ _("View") }}</a>
@@ -270,7 +196,7 @@ code.flag {
             if (createdCell && t.created_at) createdCell.textContent = fmt(t.created_at);
             // 镜像路径
             var imgCell = row.querySelector('.cell-image');
-            if (imgCell) imgCell.textContent = '[' + (t.source_type || 'docker') + '] ' + t.source_image + ' → ' + t.registry_url + '/' + t.project_dest;
+            if (imgCell) imgCell.textContent = t.source_image + ' → ' + t.registry_url + '/' + t.project_dest;
           });
 
           // 自适应轮询节奏

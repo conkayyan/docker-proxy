@@ -24,7 +24,6 @@
   </div>
 
   <dl class="kv">
-    <dt>{{ _("Source type") }}</dt><dd><span class="badge">{{ task.source_type or 'docker' }}</span></dd>
     <dt>{{ _("Source") }}</dt><dd class="mono">{{ task.source_image }}</dd>
     <dt>{{ _("Destination") }}</dt><dd class="mono">{{ task.registry.url }}/{{ project_dest(task.dest_image, task.registry.project) }}</dd>
     <dt>{{ _("Registry") }}</dt><dd>{{ task.registry.name }}（{{ task.registry.username }}）</dd>

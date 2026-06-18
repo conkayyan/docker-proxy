@@ -8,21 +8,17 @@ FROM python:3.11-slim
 # tzdata 同时给系统（/usr/share/zoneinfo）和 Python（zoneinfo）用。
 ARG TZ=Asia/Shanghai
 
-# skopeo 是系统命令，pip 装不到；用 apt
 # ca-certificates：拉镜像时源 registry 的 TLS 证书验证靠它（python:3.11-slim 默认带，
 # 这里再装一次显式声明，免得起新 base 镜像后静默丢失）。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends skopeo tzdata ca-certificates curl \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates curl \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# 验证一下 skopeo 装上了，build 时就 fail
-RUN skopeo --version
-
 # ------------------------------------------------------------------
 # docker CLI（只需要 client，不用 dockerd）。
-# 我们用 docker pull → skopeo docker-daemon → docker rmi 流水线
+# 我们用 docker pull → docker login → docker tag → docker push → docker rmi 流水线
 # 把远端镜像推到目标 registry（详见 app.py._build_pipeline），
 # 所以容器里必须能跑 docker 命令 —— 但 daemon 用的是宿主机的，
 # 通过挂载 /var/run/docker.sock（或 DOCKER_HOST 环境变量）连过去。
@@ -64,7 +60,7 @@ COPY static/ ./static/
 # （Docker 会把不存在的 host 目录创建为 root，会让 app 用户写不动 secret.key）
 #
 # docker 组（GID 999）：让 app 用户能访问宿主挂进来的 /var/run/docker.sock，
-# 这样 source_type=docker 才能 docker pull / docker rmi。如果宿主 docker 组
+# 这样 worker 才能 docker pull / docker tag / docker push。如果宿主 docker 组
 # 的 GID 不是 999，启动时把宿主 socket GID 告诉容器（或 DOCKER_HOST=tcp://…）。
 RUN useradd -m -u 1000 -s /bin/bash app \
     && groupadd --system --gid 999 docker \

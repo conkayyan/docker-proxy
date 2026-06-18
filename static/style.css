@@ -201,7 +201,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--muted);
 }
 
-/* Options row: a horizontal pill that bundles the two skopeo flag controls.
+/* Options row: a horizontal pill that bundles optional copy-related controls.
    inline-flex + nowrap on the children ensures the labels never wrap,
    even when the form column is narrow. The row shrinks to fit its
    content; max-width caps it at the parent column so it can't overflow. */

@@ -2,7 +2,7 @@
 
 > English | [中文](./README.zh.md)
 
-A small Flask-based tool: log in via the web UI, then push remote images to a target Harbor/Registry through `skopeo copy`.
+A small Flask-based tool: log in via the web UI, then push remote images to a target Harbor/Registry through the `docker` CLI (`docker login` → `docker tag` → `docker push`).
 Target registry credentials are stored locally in SQLite (Fernet-encrypted).
 
 ## Features
@@ -15,8 +15,7 @@ Target registry credentials are stored locally in SQLite (Fernet-encrypted).
 ## Requirements
 
 - Python 3.10+
-- `skopeo` (system command, `which skopeo` must succeed; on macOS use `brew install skopeo`)
-- `docker` CLI on `PATH` if you want to use **source type = `docker`** (see [Command mapping](#command-mapping)); `docker-daemon` works without it
+- `docker` CLI on `PATH` (talks to a local or remote docker daemon; the container ships with the static `docker` binary, so this is automatic in the docker-compose setup). Needed for **all** source types: `docker pull` / `docker tag` / `docker push` all go through it.
 
 ## Quick Start
 
@@ -44,9 +43,9 @@ docker compose up -d
 # Data is persisted in ./data/ (SQLite + Fernet key)
 ```
 
-The image is based on `python:3.11-slim`, installs `skopeo` via apt and the static `docker` CLI from `download.docker.com`, runs as a non-root user (uid 1000), and includes a healthcheck (probes `/login` every 30s). Multi-arch: `linux/amd64` and `linux/arm64`.
+The image is based on `python:3.11-slim`, pulls the static `docker` CLI from `download.docker.com`, runs as a non-root user (uid 1000), and includes a healthcheck (probes `/login` every 30s). Multi-arch: `linux/amd64` and `linux/arm64`.
 
-> **The `docker compose.yml` ships with `/var/run/docker.sock` mounted** so that source type `docker` works out of the box. That grants the container control equivalent to the host's docker group — fine for private deployment, but see [Source type: docker](#source-type-docker-docker-cli--docker-daemon-pipeline) before exposing this container on a shared host.
+> **The `docker compose.yml` ships with `/var/run/docker.sock` mounted** so the worker can run `docker pull` / `docker tag` / `docker push` out of the box. That grants the container control equivalent to the host's docker group — fine for private deployment, but consider removing the mount (and pointing `DOCKER_HOST` at a remote daemon) before exposing this container on a shared host.
 
 Available tags:
 
@@ -79,8 +78,9 @@ Environment variables (edit in `docker-compose.yml`):
 | `SECRET_KEY` | Flask session key | Random (invalidated on restart) |
 | `HARBOR_PROJECT` | Default value for the `project` field when creating a new Registry | `docker-proxy` |
 | `DOCKER_HOST` | Override the docker daemon URL used by the `docker` CLI (e.g. `tcp://docker.example.com:2375`). When unset, the CLI talks to `/var/run/docker.sock`. | unset |
-| `SKOPEO_HTTP2` | Passed to skopeo; enables HTTP/2 multiplexing for substantially better throughput against registries that support it. | unset (skopeo decides) |
-| `SKOPEO_MAX_CONCURRENT_DOWNLOADS` | Passed to skopeo; number of blobs fetched in parallel per copy. Skopeo default is 4; raise to ~10 on fast LANs to speed up large images. | unset (skopeo default 4) |
+| `LISTEN_HOST` | Bind address passed to `app.run()` | `0.0.0.0` |
+| `LISTEN_PORT` | Bind port passed to `app.run()` (keep in sync with the `ports` mapping and the healthcheck URL) | `5000` |
+| `FLASK_DEBUG` | Set to `1` to enable Flask debug mode (auto-reload, interactive tracebacks). **Do not enable in production** — the debugger allows arbitrary code execution. | `0` |
 
 ## On first startup
 
@@ -94,48 +94,31 @@ Environment variables (edit in `docker-compose.yml`):
 
 ## Command mapping
 
-The form exposes two source types. They map to different pipelines:
-
-### Source type: `docker` (docker CLI → docker-daemon pipeline)
-
-> Requires a working `docker` CLI that can talk to a docker daemon inside the container (mount `/var/run/docker.sock`, or set `DOCKER_HOST`). The `docker compose.yml` mounts the socket by default.
-
-For each task, the worker runs three commands in sequence:
+For each task, the worker runs these commands in sequence through the `docker` CLI:
 
 ```
 docker pull <source_image>
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
-  docker-daemon:<source_image> \
-  docker://<registry.url>/<registry.project>/<dest_image> \
-  --dest-creds <username>:<password>
-docker rmi <source_image>   # cleanup; failure here does NOT fail the task
+docker login -u <username> -p ******** <registry.url>
+docker tag <source_image> <registry.url>/<registry.project>/<dest_image>
+docker push <registry.url>/<registry.project>/<dest_image>
+docker rmi <source_image> <registry.url>/<registry.project>/<dest_image>   # only when "Cleanup local copy" is checked
+docker logout <registry.url>
 ```
 
-`--retry-times <N>` is exposed on the form (default `3`, range `0–10`; `0` disables retries). It controls how many times skopeo retries on transient errors (network blips, registry 5xx). The default matches skopeo's own default — set it lower if you want a faster hard-fail, higher if your registry is flaky.
+> Requires a working `docker` CLI that can talk to a docker daemon inside the container (mount `/var/run/docker.sock`, or set `DOCKER_HOST`). The `docker compose.yml` mounts the socket by default.
 
-The intermediate `docker pull` is what makes this mode useful: it leverages any local registry mirror / auth you have configured in the host's `~/.docker/config.json`, and the cleanup step keeps the host's docker daemon from filling up. If `docker pull` fails, the skopeo step and the cleanup are skipped (no point in copying from a non-existent local image).
+**Multi-arch images** are pushed as a full manifest list automatically — `docker push` will upload every variant present in the local image without any extra flag.
 
-### Source type: `docker-daemon`
+**The `Cleanup local copy` checkbox** (default: checked) controls the `docker rmi` step. Uncheck it to keep your local images after the push — useful for self-built images you also want to use elsewhere on the host. If `docker pull` fails, the rest of the pipeline is skipped (no point in pushing a non-existent local image); if `docker rmi` or `docker logout` fails, the task is still marked successful (those are pure cleanup).
 
-Runs only one command. The image must already exist in the host's docker daemon — the worker does **not** pull it for you and does **not** delete it afterward (it's your image, not ours):
+**Registry-level project prefix** is configured per-Registry under "Registry Management → New/Edit"; leave empty to omit it. The default value when creating a new Registry comes from the `HARBOR_PROJECT` environment variable (defaults to `docker-proxy`).
 
-```
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
-  docker-daemon:<source_image> \
-  docker://<registry.url>/<registry.project>/<dest_image> \
-  --dest-creds <username>:<password>
-```
-
-`--retry-times <N>` is exposed on the form (default `3`, range `0–10`; `0` disables retries). It controls how many times skopeo retries on transient errors (network blips, registry 5xx). The default matches skopeo's own default — set it lower if you want a faster hard-fail, higher if your registry is flaky.
-
-`registry.project` is configured per-Registry under "Registry Management → New/Edit"; leave empty to omit the prefix.
-The default value when creating a new Registry comes from the `HARBOR_PROJECT` environment variable (defaults to `docker-proxy`).
-
-| Form input | Actual pipeline (`docker`) |
+| Form input | Actual pipeline |
 | --- | --- |
-| Source: `docker.io/library/nginx:1.27`<br>Destination: `nginx:1.27`<br>Registry: `harbor.company.local`, project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy --retry-times 3 docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
+| Source: `docker.io/library/nginx:1.27`<br>Destination: `nginx:1.27`<br>Registry: `harbor.company.local`, project: `docker-proxy`<br>Cleanup: ✓ | `docker pull docker.io/library/nginx:1.27` → `docker login -u admin -p ******** harbor.company.local` → `docker tag docker.io/library/nginx:1.27 harbor.company.local/docker-proxy/nginx:1.27` → `docker push harbor.company.local/docker-proxy/nginx:1.27` → `docker rmi docker.io/library/nginx:1.27 harbor.company.local/docker-proxy/nginx:1.27` → `docker logout harbor.company.local` |
+| Same as above, but Cleanup: ✗ | Same as above minus the `docker rmi` step. |
 
-The Task detail page shows the full pipeline with each command on its own line; credentials are masked.
+The Task detail page shows the full pipeline with each command on its own line; credentials in the login command are masked.
 
 > **Destination image naming convention**:
 > - Use only `<image>:<tag>` for the destination; **do not** include Docker Hub namespace prefixes such as `library/`.
@@ -149,9 +132,9 @@ The Task detail page shows the full pipeline with each command on its own line; 
 > ```
 > If the destination image already starts with `<project>/`, the prefix is not duplicated.
 
-### Source type: `docker` without a docker daemon
+### No docker daemon reachable
 
-If the container can't reach a docker daemon (e.g. you removed the `/var/run/docker.sock` mount to harden the deployment), the worker fails the task immediately with `docker command not found` / `Cannot connect to the Docker daemon`. Switch the source type to `docker-daemon` (and `docker pull` / `docker load` the image locally first), or restore the socket mount / set `DOCKER_HOST`.
+If the container can't reach a docker daemon (e.g. you removed the `/var/run/docker.sock` mount to harden the deployment), the worker fails the task immediately with `docker command not found` / `Cannot connect to the Docker daemon`. Restore the socket mount or set `DOCKER_HOST` to point at a reachable daemon.
 
 ## Layout
 

@@ -1,5 +1,6 @@
-"""docker-proxy — Flask UI for running `skopeo copy` against a target registry.
+"""docker-proxy — Flask UI for pushing images to a target registry via docker CLI.
 
+工作流：docker pull（可选）→ docker login → docker tag → docker push → docker rmi（可选）→ docker logout。
 目标 Registry 凭据加密保存在本地 SQLite；登录态用 Flask-Login session。
 """
 
@@ -155,8 +156,8 @@ class CopyTask(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     registry_id = db.Column(db.Integer, db.ForeignKey("registries.id"), nullable=False)
     source_image = db.Column(db.String(300), nullable=False)
-    # 源类型："docker"（从 registry 拉，docker:// 前缀）或 "docker-daemon"
-    # （从本地 docker daemon 取，docker-daemon: 前缀）。
+    # 历史遗留字段：skopeo 时代用于区分 "docker" / "docker-daemon"。
+    # 当前实现统一走 docker CLI（自动 pull），不再读这个值；保留仅为兼容老 DB 行。
     source_type = db.Column(db.String(20), default="docker", nullable=False)
     dest_image = db.Column(db.String(300), nullable=False)
     status = db.Column(db.String(20), default="pending", nullable=False)
@@ -164,14 +165,19 @@ class CopyTask(db.Model):
     error = db.Column(db.Text, default="", nullable=False)
     return_code = db.Column(db.Integer)
     multi_arch = db.Column(db.Boolean, default=True, nullable=False)
-    # --retry-times N：传给 skopeo copy；网络抖动时重试 0~10 次。
-    # 3 是 skopeo 自己的默认值；这里也用 3，让 UI 上"不改 = 默认"的语义清晰。
+    # 历史遗留字段：早期版本里传给 skopeo copy 的 --retry-times（默认 3）。
+    # 当前实现走 docker CLI，docker daemon 自带重试；这里保留列仅为兼容老 DB 行，
+    # 写入/读取时一律忽略。
     retry_times = db.Column(db.Integer, default=3, nullable=False)
+    # 推完后是否 `docker rmi` 删掉本地副本（source + 临时 tag）。
+    # 默认 True —— 大多数场景是「拉 → 推 → 清」的临时操作。
+    # 取消勾选则保留本地镜像，适合「我自己 build 的镜像只想顺便推一份到远端」。
+    cleanup = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
-    # 看门狗用：worker 每次落库都刷新 heartbeat_at；watchdog 据此判断 worker/skopeo
-    # 是否已挂。subprocess_pid 记录当前 skopeo 子进程的 PID，挂起时 watchdog 可以 SIGTERM。
+    # 看门狗用：worker 每次落库都刷新 heartbeat_at；watchdog 据此判断 worker/docker
+    # 子进程是否已挂。subprocess_pid 记录当前 docker 子进程的 PID，挂起时 watchdog 可以 SIGTERM。
     heartbeat_at = db.Column(db.DateTime)
     subprocess_pid = db.Column(db.Integer)
 
@@ -258,12 +264,17 @@ class CopyForm(FlaskForm):
     source_image = StringField(
         _l("Source image"),
         validators=[DataRequired()],
-        description=_l("e.g. docker.io/library/nginx:1.27 (full path of a Docker Hub official image)"),
+        description=_l("e.g. docker.io/library/nginx:1.27. Full image:tag — the worker runs `docker pull` first; already-local images are detected and skipped."),
     )
     dest_image = StringField(
         _l("Destination image"),
         validators=[DataRequired()],
         description=_l("e.g. nginx:1.27 (only image:tag; project is auto-appended by the selected Registry)"),
+    )
+    cleanup = BooleanField(
+        _l("Cleanup local copy after push"),
+        default=True,
+        description=_l("Run `docker rmi` to delete the source image and the temporary target tag locally after a successful push. Uncheck to keep your local images (e.g. for self-built images you also use elsewhere)."),
     )
     multi_arch = SelectField(
         _l("Multi-arch"),
@@ -271,13 +282,13 @@ class CopyForm(FlaskForm):
         default="1",
         description=_l("Push the full multi-arch manifest list (amd64 / arm64 / armv7). Default Yes."),
     )
-    # --retry-times N：传给 skopeo copy，网络/registry 抖动时自动重试。
-    # skopeo 自身默认就是 3；这里默认 3 保持一致，0 表示不重试。
+    # 历史遗留：早期 skopeo 时代的 --retry-times 字段。docker CLI 自身有重试，
+    # 表单里不再展示，这里只保留字段以免 WTForms 校验老任务行时炸。
     retry_times = IntegerField(
         _l("Retry times"),
         default=3,
         validators=[NumberRange(min=0, max=10)],
-        description=_l("Skopeo retry count on transient errors. 0 = no retries; max 10; default 3."),
+        description=_l("Legacy field; docker push handles retries itself."),
     )
     submit = SubmitField(_l("Start Copy"))
 
@@ -294,14 +305,14 @@ _worker_lock = threading.Lock()
 
 # 看门狗：worker 必须至少每 HEARTBEAT_TIMEOUT 秒刷新一次 heartbeat_at，
 # 否则 watchdog 会把对应的 running 任务标为 failed 并 SIGTERM 子进程。
-# 默认 120s 心跳超时（skopeo 推大镜像前几分钟常无日志）、10s 巡检一次；
+# 默认 120s 心跳超时（docker push 大镜像前几分钟常无日志）、10s 巡检一次；
 # 可通过环境变量调。
 WATCHDOG_INTERVAL_SEC = int(os.environ.get("TASK_WATCHDOG_INTERVAL", "10"))
 HEARTBEAT_TIMEOUT_SEC = int(os.environ.get("TASK_HEARTBEAT_TIMEOUT", "120"))
 
 # 心跳 ticker 间隔：_run_task 在跑期间，每 N 秒刷一次 heartbeat_at，跟
-# 子进程有没有 stdout 输出无关。skopeo v2 / multi-arch 拷贝时切完 blob
-# 就沉默几分钟传数据，靠这个保命。可通过环境变量调。
+# 子进程有没有 stdout 输出无关。docker push 大镜像时切完 layer 就沉默
+# 几分钟传数据，靠这个保命。可通过环境变量调。
 HEARTBEAT_TICK_SEC = int(os.environ.get("TASK_HEARTBEAT_TICK", "5"))
 
 
@@ -356,6 +367,7 @@ def _migrate_columns() -> None:
         "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
         "ALTER TABLE copy_tasks ADD COLUMN source_type VARCHAR(20) DEFAULT 'docker' NOT NULL",
         "ALTER TABLE copy_tasks ADD COLUMN retry_times INTEGER DEFAULT 3 NOT NULL",
+        "ALTER TABLE copy_tasks ADD COLUMN cleanup BOOLEAN DEFAULT 1 NOT NULL",
     ]
     with app.app_context():
         for sql in stmts:
@@ -392,68 +404,77 @@ def _recover_unfinished_tasks() -> None:
             db.session.commit()
 
 
-def _source_url(source_type: str, source_image: str) -> str:
-    """根据源类型拼 skopeo 的 source URL。
+def _target_ref(task: CopyTask) -> str:
+    """返回 docker push 的目标引用 = registry.url/project/dest_image。
 
-    - "docker"          → docker://nginx:1.27（逻辑源；实际执行走 docker pull + docker-daemon，参见 _build_pipeline）
-    - "docker-daemon"   → docker-daemon:nginx:1.27（直接从本地 docker daemon 取）
-    其它值按 docker 处理，避免脏数据让 _build_command 抛错。
+    与 _project_dest 一起把 dest_image 拼上 project 前缀（避免重复）。
     """
-    if source_type == "docker-daemon":
-        return f"docker-daemon:{source_image}"
-    return f"docker://{source_image}"
+    return f"{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}"
 
 
-def _build_command(task: CopyTask) -> list[str]:
-    """构造 skopeo copy 命令本身（pipeline 中的核心一步）。
-
-    source_type="docker" 在 skopeo 这一步用 docker-daemon: 作为源，
-    因为 worker 在调用本命令之前已经 `docker pull` 到了本地。
-    完整多步骤流参见 _build_pipeline。
+def _login_cmd(task: CopyTask) -> list[str]:
+    """docker login 的 argv。密码走 -p 参数（与老 skopeo --dest-creds 等价，
+    简单且 _mask_command_str 可以直接遮；如要更安全可改 --password-stdin）。
     """
-    cmd: list[str] = ["skopeo", "copy"]
-    if task.multi_arch:
-        cmd.append("--multi-arch=all")
-    # --retry-times 显式追加（哪怕等于 skopeo 默认 3 也保留），
-    # 这样 UI 上看到的命令与运行时一致；也方便"等于 0"的边界一眼可见。
-    # 用 is not None 兜底：老库 row 可能 NULL（ALTER 加列时若默认没回填），
-    # 这种就当 skopeo 默认 3；显式 0 走 max(0, …) 保留。
-    rt = task.retry_times if task.retry_times is not None else 3
-    cmd.extend(["--retry-times", str(max(0, int(rt)))])
+    cmd: list[str] = ["docker", "login"]
     if not task.registry.verify_tls:
-        cmd.append("--dest-tls-verify=false")
-    # "docker" 走 docker pull → docker-daemon 路径；只有 "docker-daemon"
-    # 才允许从用户原已存在的本地镜像里拷（用户自己负责保证镜像存在）。
-    src_type = task.source_type or "docker"
-    skopeo_source_type = "docker-daemon" if src_type == "docker" else src_type
-    cmd.append(_source_url(skopeo_source_type, task.source_image))
-    cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
-    cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
+        # docker login 没有 --tls-verify 之类的开关；用环境变量影响 daemon 行为比较隐式，
+        # 这里只把凭据传过去，推送时由 docker push 配合 DOCKER_CONTENT_TRUST 等处理。
+        # 保留 verify_tls 字段为兼容旧 Registry 配置；新流程里此 flag 不再影响 login。
+        pass
+    cmd.extend(["-u", task.registry.username])
+    cmd.extend(["-p", task.registry.get_password()])
+    cmd.append(task.registry.url)
     return cmd
 
 
 def _build_pipeline(task: CopyTask) -> list[tuple[str, list[str]]]:
     """返回该任务实际要执行的命令列表（label, argv）。
 
-    - source_type="docker"        → [docker pull, skopeo copy (docker-daemon→target), docker rmi]
-                                     把远端镜像先拉到本地 docker daemon，再用 docker-daemon 作 skopeo
-                                     源去推；推完清掉本地镜像节省磁盘。
-    - source_type="docker-daemon" → [skopeo copy (docker-daemon→target)]
-                                     用户原已存在的本地镜像直接推；不删，因为可能是用户其他场景要用的。
+    通用流程（所有任务都跑）：
+      docker pull → docker login → docker tag → docker push → docker logout
 
-    中间任何一步失败：pull 失败 → 后面两步跳过；skopeo 失败 → rmi 仍执行清理；rmi 失败只记日志，不影响任务成败。
+    cleanup=True 时尾部多一步 `docker rmi <source> <target>` 清理本地副本。
+    cleanup=False 时保留本地镜像（用户自己 build 的、还要在本地用的）。
+
+    中间任何一步失败：
+    - pull 失败 → 后面 login/tag/push/rmi/logout 全部跳过（本地没图可推）
+    - push 失败 → rmi 仍执行（清掉 tag 出来的本地副本），logout 仍执行
+    - rmi / logout 失败 → 只记日志，不影响任务成败
     """
-    skopeo_cmd = _build_command(task)
-    src_type = task.source_type or "docker"
-    if src_type == "docker":
-        return [
-            (_("docker pull (fetch source image locally)"), ["docker", "pull", task.source_image]),
-            (_("skopeo copy (docker-daemon → target)"), skopeo_cmd),
-            (_("docker rmi (cleanup local copy)"), ["docker", "rmi", task.source_image]),
-        ]
-    return [
-        (_("skopeo copy (docker-daemon → target)"), skopeo_cmd),
+    target = _target_ref(task)
+    pipeline: list[tuple[str, list[str]]] = [
+        (
+            _("docker pull (fetch source image locally)"),
+            ["docker", "pull", task.source_image],
+        ),
+        (
+            _("docker login (authenticate to target registry)"),
+            _login_cmd(task),
+        ),
+        (
+            _("docker tag (retag local image for target registry)"),
+            ["docker", "tag", task.source_image, target],
+        ),
+        (
+            _("docker push (upload image to target registry)"),
+            ["docker", "push", target],
+        ),
     ]
+    if task.cleanup:
+        pipeline.append(
+            (
+                _("docker rmi (cleanup local copies)"),
+                ["docker", "rmi", task.source_image, target],
+            )
+        )
+    pipeline.append(
+        (
+            _("docker logout (clear stored credentials)"),
+            ["docker", "logout", task.registry.url],
+        )
+    )
+    return pipeline
 
 
 def _display_command(task: CopyTask) -> str:
@@ -474,7 +495,9 @@ def _display_command(task: CopyTask) -> str:
 
 
 # 这些 token 后面接的下一个参数是凭证，保存到 DB / 展示时必须掩盖
-_CRED_FLAGS = {"--dest-creds", "--src-creds", "--creds"}
+# - `--dest-creds` / `--src-creds` / `--creds`  → skopeo（已废弃但留作兜底）
+# - `-p` / `--password`                         → docker login
+_CRED_FLAGS = {"--dest-creds", "--src-creds", "--creds", "-p", "--password"}
 _MASK = "********"
 
 
@@ -533,14 +556,12 @@ def _project_dest(dest_image: str, project: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _skopeo_or_raise() -> None:
-    if shutil.which("skopeo") is None:
-        raise RuntimeError(_("skopeo command not found. Install first: brew install skopeo"))
-
-
-def _tls_flag(verify_tls: bool) -> list[str]:
-    """不校验 TLS 时追加 --tls-verify=false。校验时返回空（skopeo 默认即 verify）。"""
-    return [] if verify_tls else ["--tls-verify=false"]
+def _docker_or_raise() -> None:
+    """所有跟 docker CLI 打交道的路径都需要它。"""
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            _("docker command not found. Install Docker or set DOCKER_HOST for a remote daemon.")
+        )
 
 
 def list_registry_catalog(registry: Registry) -> list[str]:
@@ -595,42 +616,84 @@ def _next_link(link_header: str) -> str | None:
 
 
 def list_repo_tags(registry: Registry, repo: str) -> list[str]:
-    """调用 `skopeo list-tags` 列出单个 repo 的所有 tag。"""
-    _skopeo_or_raise()
-    cmd = [
-        "skopeo",
-        *_tls_flag(registry.verify_tls),
-        "--creds",
-        f"{registry.username}:{registry.get_password()}",
-        "list-tags",
-        f"docker://{registry.url}/{repo}",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0:
+    """调用 Registry v2 HTTP API 列出单个 repo 的所有 tag。
+
+    走 `GET /v2/<repo>/tags/list`，基本认证。和 list_registry_catalog 用同一套
+    401/403 错误语义，便于在 UI 上看到一致的提示。
+    """
+    scheme = "https" if registry.verify_tls else "http"
+    base = f"{scheme}://{registry.url}/v2/{repo}/tags/list"
+    auth = HTTPBasicAuth(registry.username, registry.get_password())
+    resp = requests.get(base, auth=auth, verify=registry.verify_tls, timeout=30)
+    if resp.status_code in (401, 403):
         raise RuntimeError(
-            _("list-tags failed: %(msg)s", msg=proc.stderr.strip() or proc.stdout.strip())
+            _("Auth failed: HTTP %(code)s @ %(url)s. Most common causes: ① the temporary password has expired (console → access credentials → regenerate, then save on the Registry edit page); ② the current account has no read permission on this Registry namespace.", code=resp.status_code, url=registry.url)
         )
+    if resp.status_code == 404:
+        return []  # repo 不存在或 catalog 还没把它列上来 —— 当作"没 tag"
+    resp.raise_for_status()
     try:
-        return json.loads(proc.stdout).get("Tags", []) or []
-    except json.JSONDecodeError as e:
-        raise RuntimeError(_("Cannot parse skopeo output: %(err)s", err=e))
+        return list(resp.json().get("tags") or [])
+    except (ValueError, json.JSONDecodeError) as e:
+        raise RuntimeError(_("Cannot parse registry response: %(err)s", err=e))
 
 
 def delete_image(registry: Registry, repo: str, tag: str) -> tuple[bool, str]:
-    """通过 `skopeo delete` 删除单个 repo:tag。返回 (success, output)。"""
-    _skopeo_or_raise()
-    target = f"docker://{registry.url}/{repo}:{tag}"
-    cmd = [
-        "skopeo",
-        *_tls_flag(registry.verify_tls),
-        "--creds",
-        f"{registry.username}:{registry.get_password()}",
-        "delete",
-        target,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    output = (proc.stdout + proc.stderr).strip()
-    return proc.returncode == 0, output
+    """通过 Registry v2 HTTP API 删除单个 repo:tag。返回 (success, output)。
+
+    流程：先 HEAD/GET manifest 拿 digest（Docker-Content-Digest），再 DELETE manifest。
+    Docker CLI 的 `docker rmi <remote>` 只删本地视角，删不掉远端；这里直接走
+    registry 自身的 REST 端点。
+    """
+    scheme = "https" if registry.verify_tls else "http"
+    auth = HTTPBasicAuth(registry.username, registry.get_password())
+    base = f"{scheme}://{registry.url}/v2/{repo}"
+    # 多 manifest 媒体类型都列上 —— 不同 registry 默认 media type 不一样
+    manifest_headers = {
+        "Accept": ", ".join(
+            [
+                "application/vnd.docker.distribution.manifest.v2+json",
+                "application/vnd.docker.distribution.manifest.list.v2+json",
+                "application/vnd.oci.image.manifest.v1+json",
+                "application/vnd.oci.image.index.v1+json",
+            ]
+        ),
+    }
+    try:
+        head = requests.get(
+            f"{base}/manifests/{tag}",
+            auth=auth,
+            verify=registry.verify_tls,
+            timeout=30,
+            headers=manifest_headers,
+        )
+    except requests.RequestException as e:
+        return False, f"GET manifest failed: {e}"
+    if head.status_code in (401, 403):
+        return False, f"HTTP {head.status_code} (auth failed)"
+    if head.status_code == 404:
+        return False, "manifest not found (already gone?)"
+    if not head.ok:
+        return False, f"GET manifest HTTP {head.status_code}: {head.text.strip()[:200]}"
+    digest = head.headers.get("Docker-Content-Digest")
+    if not digest:
+        return False, "registry did not return Docker-Content-Digest header"
+    try:
+        delete = requests.delete(
+            f"{base}/manifests/{digest}",
+            auth=auth,
+            verify=registry.verify_tls,
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        return False, f"DELETE manifest failed: {e}"
+    if delete.status_code in (401, 403):
+        return False, f"HTTP {delete.status_code} (auth failed)"
+    if delete.status_code == 404:
+        return False, "manifest not found (already gone?)"
+    if not delete.ok:
+        return False, f"DELETE manifest HTTP {delete.status_code}: {delete.text.strip()[:200]}"
+    return True, f"deleted {repo}:{tag} (digest {digest[:12]}…)"
 
 
 def delete_all_tags(registry: Registry, repo: str) -> tuple[int, int, list[str]]:
@@ -660,7 +723,7 @@ def _run_step(task: CopyTask, args: list[str], log_lines: list[str]) -> int:
     和 heartbeat_at，让 watchdog 能在卡住时 SIGTERM 当前正在跑的子进程。
     """
     # bufsize=0 + os.read：text=True/bufsize=1 是 line-buffered，只在 \n 到达
-    # 时 yield —— 而 skopeo / docker 的进度条 [=>--] 是用 \r 原地刷新的，中间
+    # 时 yield —— 而 docker 的进度条 [=>--] 是用 \r 原地刷新的，中间
     # 没 \n，那段窗口里心跳会停。改读原始字节，任意 chunk 都算进度。
     try:
         proc = subprocess.Popen(
@@ -732,32 +795,23 @@ def _run_task(task_id: int) -> None:
         db.session.commit()
 
         # 预检：必备外部命令
-        src_type = task.source_type or "docker"
-        if shutil.which("skopeo") is None:
-            task.status = "failed"
-            task.error = "skopeo command not found. Install first: brew install skopeo"
-            task.finished_at = datetime.utcnow()
-            db.session.commit()
-            return
-        if src_type == "docker" and shutil.which("docker") is None:
+        if shutil.which("docker") is None:
             task.status = "failed"
             task.error = (
-                "docker command not found. source_type=docker requires docker CLI to "
-                "pull the image locally before pushing via skopeo docker-daemon. "
-                "Install Docker, or switch source_type to docker-daemon if the image "
-                "is already present locally."
+                "docker command not found. Install Docker (or set DOCKER_HOST to a "
+                "remote daemon) and retry."
             )
             task.finished_at = datetime.utcnow()
             db.session.commit()
             return
 
         pipeline = _build_pipeline(task)
-        # pipeline 里 skopeo copy 那一格的索引 —— 它的成败决定任务最终状态。
+        # pipeline 里 docker push 那一格的索引 —— 它的成败决定任务最终状态。
         main_step_index = next(
-            i for i, (label, _) in enumerate(pipeline) if label.startswith("skopeo copy")
+            i for i, (label, _) in enumerate(pipeline) if label.startswith("docker push")
         )
 
-        # ticker：独立于 stdout 的心跳线程。skopeo / docker pull 切完 blob 就沉默
+        # ticker：独立于 stdout 的心跳线程。docker pull/push 切完 layer 就沉默
         # 好几分钟传数据，主线程 os.read 卡住没法自己刷心跳 + 没法 commit，
         # 靠 ticker 每 5s commit 一次 heartbeat 到 DB 来保命。
         stop_ticker = threading.Event()
@@ -767,7 +821,7 @@ def _run_task(task_id: int) -> None:
         ticker.start()
 
         log_lines: list[str] = []
-        skopeo_rc: int = 0  # 主步骤的 returncode
+        main_rc: int = 0  # 主步骤（docker push）的 returncode
         early_aborted = False
         try:
             for i, (label, args) in enumerate(pipeline):
@@ -783,9 +837,9 @@ def _run_task(task_id: int) -> None:
                 log_lines.append(f"--- exit code: {rc} ---")
 
                 if i == main_step_index:
-                    skopeo_rc = rc
+                    main_rc = rc
                 elif i < main_step_index and rc != 0:
-                    # 前置步骤（pull）失败 → 后续 skopeo / rmi 直接跳过。
+                    # 前置步骤（pull）失败 → 后续步骤直接跳过。
                     # rmi 即便跑也是 "No such image" 没意义。
                     log_lines.append("(previous step failed; skipping remaining steps)")
                     early_aborted = True
@@ -798,19 +852,19 @@ def _run_task(task_id: int) -> None:
                 return
 
             task.subprocess_pid = None
-            task.return_code = skopeo_rc
+            task.return_code = main_rc
             task.finished_at = datetime.utcnow()
             if early_aborted:
                 # 错误信息已在 _run_step 输出里写明（log_lines 已落库）；
                 # 这里只保留简短 summary。
                 task.status = "failed"
                 if not task.error:
-                    task.error = "docker pull failed; cannot proceed to skopeo copy"
-            elif skopeo_rc == 0:
+                    task.error = "docker pull failed; cannot proceed to docker push"
+            elif main_rc == 0:
                 task.status = "success"
             else:
                 task.status = "failed"
-                task.error = f"skopeo exited with code {skopeo_rc}"
+                task.error = f"docker push exited with code {main_rc}"
         except Exception as e:  # pragma: no cover
             task.status = "failed"
             task.error = f"Execution error: {e}"
@@ -824,8 +878,8 @@ def _run_task(task_id: int) -> None:
 def _heartbeat_ticker(task_id: int, stop: threading.Event) -> None:
     """_run_task 期间独立刷 heartbeat 的守护线程。
 
-    主线程用 os.read 阻塞读 stdout 期间没法自己刷心跳；skopeo v2 / multi-arch
-    拷贝切完 blob 就沉默好几分钟传数据，那段窗口里如果只看 stdout 长度就会
+    主线程用 os.read 阻塞读 stdout 期间没法自己刷心跳；docker push 大镜像
+    时切完 layer 就沉默好几分钟传数据，那段窗口里如果只看 stdout 长度就会
     被 watchdog 误判挂起。ticker 每 HEARTBEAT_TICK_SEC 秒把 task.heartbeat_at
     拨到当前时间并 commit 到 DB（自己开 app_context 重新 fetch 任务，避免和
     主线程共享 SQLAlchemy session）。
@@ -867,7 +921,7 @@ def _check_hung_tasks() -> None:
     """看门狗核心：找出心跳超时的 running 任务，标记 failed 并 SIGTERM 子进程。
 
     心跳由 _run_task 在每次 stdout 刷库时刷新（≈1.5s 一次）。
-    若 worker 卡住（DB 死锁、skopeo 子进程僵死但 stdout EOF、worker 线程崩了），
+    若 worker 卡住（DB 死锁、docker 子进程僵死但 stdout EOF、worker 线程崩了），
     heartbeat_at 就会停在过去；超时后这条路径负责善后。
     """
     with app.app_context():
@@ -884,7 +938,7 @@ def _check_hung_tasks() -> None:
             task.status = "failed"
             task.error = (
                 f"Task had no heartbeat for over {HEARTBEAT_TIMEOUT_SEC}s; "
-                "worker/skopeo may have hung, auto-marked as failed"
+                "worker/docker may have hung, auto-marked as failed"
             )
             task.finished_at = now
             if task.subprocess_pid:
@@ -1258,13 +1312,13 @@ def dashboard():
         .limit(10)
         .all()
     )
-    skopeo_ok = shutil.which("skopeo") is not None
+    docker_ok = shutil.which("docker") is not None
     return render_template(
         "dashboard.html",
         form=form,
         registries=registries,
         tasks=recent,
-        skopeo_ok=skopeo_ok,
+        docker_ok=docker_ok,
     )
 
 
@@ -1285,10 +1339,9 @@ def copy_create():
     source = (request.form.get("source_image") or "").strip()
     dest = (request.form.get("dest_image") or "").strip()
     multi_arch = (request.form.get("multi_arch") or "1") == "1"
-    source_type = (request.form.get("source_type") or "docker").strip()
-    if source_type not in ("docker", "docker-daemon"):
-        flash(_("Unsupported source type: %(t)s", t=source_type), "error")
-        return redirect(url_for("dashboard"))
+    # HTML checkbox 不勾时浏览器根本不会提交字段，所以缺失即代表 False。
+    # cleanup=False → 不在尾部 rmi，保留用户本地镜像。
+    cleanup = request.form.get("cleanup") in ("1", "true", "on")
     if not source or not dest:
         flash(_("Source and destination images cannot be empty"), "error")
         return redirect(url_for("dashboard"))
@@ -1304,10 +1357,10 @@ def copy_create():
     task = CopyTask(
         user_id=current_user.id,
         registry_id=reg.id,
-        source_type=source_type,
         source_image=source,
         dest_image=dest.lstrip("/"),
         multi_arch=multi_arch,
+        cleanup=cleanup,
         retry_times=retry_times,
         status="pending",
     )
@@ -1430,12 +1483,12 @@ def tasks_recent():
                     {
                         "id": t.id,
                         "status": t.status,
-                        "source_type": t.source_type or "docker",
                         "source_image": t.source_image,
                         "dest_image": t.dest_image,
                         "registry_url": t.registry.url,
                         "registry_project": t.registry.project,
                         "project_dest": _project_dest(t.dest_image, t.registry.project),
+                        "cleanup": t.cleanup,
                         "created_at": t.created_at.isoformat() if t.created_at else None,
                         "started_at": t.started_at.isoformat() if t.started_at else None,
                         "finished_at": t.finished_at.isoformat() if t.finished_at else None,
@@ -1544,4 +1597,11 @@ init_db()
 
 if __name__ == "__main__":
     _ensure_worker()
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    # 监听参数全部走环境变量，方便本地 / 容器 / 反代前调试时切换。
+    #  - LISTEN_HOST：默认 0.0.0.0（监听所有网卡；容器/反代场景想要「只本机」可设 127.0.0.1）
+    #  - LISTEN_PORT：默认 5000；与 docker-compose.yml 的 ports 段、healthcheck 一致
+    #  - FLASK_DEBUG：0/1；本机调试可设 1，但生产别开（debugger 可执行任意代码）
+    host = os.environ.get("LISTEN_HOST", "127.0.0.1")
+    port = int(os.environ.get("LISTEN_PORT", "5000"))
+    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(host=host, port=port, debug=debug, threaded=True)

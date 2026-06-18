@@ -68,7 +68,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # amd64 + arm64（python:3.11-slim 和 skopeo 都支持；本机调试可去掉 arm64 省时间）
+          # amd64 + arm64（python:3.11-slim 和静态 docker CLI 都支持；本机调试可去掉 arm64 省时间）
           platforms: linux/amd64,linux/arm64
           # 利用 layer cache 加速（包依赖变化少时第二次基本秒过）
           cache-from: type=gha

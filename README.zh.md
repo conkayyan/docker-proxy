@@ -2,7 +2,7 @@
 
 > [English](./README.md) | 中文
 
-一个基于 Flask 的小型工具：用 Web 登录后，把远端镜像通过 `skopeo copy` 推到目标 Harbor/Registry。
+一个基于 Flask 的小型工具：用 Web 登录后，通过 `docker` CLI（`docker login` → `docker tag` → `docker push`）把远端镜像推到目标 Harbor/Registry。
 目标仓库的用户名/密码保存在本地 SQLite 中（Fernet 加密）。
 
 ## 功能
@@ -15,8 +15,7 @@
 ## 依赖
 
 - Python 3.10+
-- `skopeo`（系统命令，需 `which skopeo` 可用；macOS 可 `brew install skopeo`）
-- 如果要用**源类型 `docker`**：还需要 `docker` CLI 能联通一个 docker daemon（见 [命令映射](#命令映射)）；只用 `docker-daemon` 则无需 docker
+- `docker` CLI（容器镜像已自带静态 docker 二进制；本地直接跑请自行安装 Docker Desktop / docker-ce）。所有源类型都依赖它：`docker pull` / `docker tag` / `docker push` 都要走它。
 
 ## 启动
 
@@ -44,9 +43,9 @@ docker compose up -d
 # 数据持久化在 ./data/ 目录（SQLite + Fernet key）
 ```
 
-镜像基于 `python:3.11-slim`：apt 装 skopeo；从 `download.docker.com` 拉静态 docker CLI；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。多架构：`linux/amd64` + `linux/arm64`。
+镜像基于 `python:3.11-slim`：从 `download.docker.com` 拉静态 docker CLI；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。多架构：`linux/amd64` + `linux/arm64`。
 
-> **`docker-compose.yml` 默认把 `/var/run/docker.sock` 挂进了容器**，源类型 `docker` 才能跑 `docker pull` / `docker rmi`。这等于把宿主 docker 控制权交给容器内的 app 用户（可起特权容器、挂载 / 等）—— 私有部署可接受；公网/多租户请参考 [源类型：docker](#源类型dockerdocker-cli--docker-daemon-流水线)。
+> **`docker-compose.yml` 默认把 `/var/run/docker.sock` 挂进了容器**，worker 才能跑 `docker pull` / `docker tag` / `docker push`。这等于把宿主 docker 控制权交给容器内的 app 用户（可起特权容器、挂载 / 等）—— 私有部署可接受；公网/多租户请把挂载去掉并把 `DOCKER_HOST` 指向远端 daemon。
 
 可用 tag：
 
@@ -79,8 +78,9 @@ docker compose up -d --build
 | `SECRET_KEY` | Flask session 密钥 | 随机（重启失效） |
 | `HARBOR_PROJECT` | 新建 Registry 时 project 字段的默认值 | `docker-proxy` |
 | `DOCKER_HOST` | 覆盖 `docker` CLI 用的 daemon 地址（如 `tcp://docker.example.com:2375`）。不设就走 `/var/run/docker.sock`。 | 未设 |
-| `SKOPEO_HTTP2` | 透传给 skopeo，启用 HTTP/2 多路复用；对支持 HTTP/2 的 registry 吞吐显著提升。 | 未设（skopeo 自定） |
-| `SKOPEO_MAX_CONCURRENT_DOWNLOADS` | 透传给 skopeo，单次 copy 并行下载的 blob 数。skopeo 默认 4；内网高速环境可拉到 10 左右加速大镜像。 | 未设（skopeo 默认 4） |
+| `LISTEN_HOST` | 监听地址（传给 `app.run()`） | `0.0.0.0` |
+| `LISTEN_PORT` | 监听端口（传给 `app.run()`；和 `ports` 段、healthcheck URL 保持一致） | `5000` |
+| `FLASK_DEBUG` | 设为 `1` 开启 Flask debug 模式（自动重载、交互式 traceback）。**生产别开** —— debugger 可执行任意代码。 | `0` |
 
 ## 首次启动会自动
 
@@ -94,48 +94,31 @@ docker compose up -d --build
 
 ## 命令映射
 
-表单提供两种源类型，对应不同流水线。
-
-### 源类型 `docker`：docker CLI → docker-daemon 流水线
-
-> 要求容器内的 `docker` CLI 能连通一个 docker daemon：挂 `/var/run/docker.sock` 或设 `DOCKER_HOST`。`docker-compose.yml` 默认已经挂好。
-
-每次任务按顺序跑三条命令：
+每次任务由 worker 通过 `docker` CLI 按顺序跑下列命令：
 
 ```
 docker pull <source_image>
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
-  docker-daemon:<source_image> \
-  docker://<registry.url>/<registry.project>/<dest_image> \
-  --dest-creds <username>:<password>
-docker rmi <source_image>   # 清理；这一步失败不影响任务成败
+docker login -u <username> -p ******** <registry.url>
+docker tag <source_image> <registry.url>/<registry.project>/<dest_image>
+docker push <registry.url>/<registry.project>/<dest_image>
+docker rmi <source_image> <registry.url>/<registry.project>/<dest_image>   # 只有勾选「推完后清理本地副本」时才跑
+docker logout <registry.url>
 ```
 
-`--retry-times <N>` 在表单上可配（默认 `3`，范围 `0–10`；`0` 即不重试）。控制 skopeo 在网络抖动 / registry 5xx 等瞬时错误时的重试次数；默认值与 skopeo 自身一致 —— 想更早硬失败就调小，registry 不稳就调大。
+> 要求容器内的 `docker` CLI 能连通一个 docker daemon：挂 `/var/run/docker.sock` 或设 `DOCKER_HOST`。`docker-compose.yml` 默认已经挂好。
 
-中间的 `docker pull` 让这个模式很有用：可以直接复用宿主 `~/.docker/config.json` 里配好的镜像仓库镜像 / 鉴权；最后 `docker rmi` 顺手清掉本地副本，不挤占宿主磁盘。`docker pull` 失败的话后面 skopeo / rmi 都跳过（本地没图可推，也没东西可清）。
+**多架构镜像**会被作为完整的 manifest list 一起推送 —— `docker push` 默认会推本地镜像里包含的所有架构，无需额外 flag。
 
-### 源类型 `docker-daemon`
+**「推完后清理本地副本」复选框**（默认勾选）控制 `docker rmi` 这一步。不勾则保留本地镜像 —— 适合自己 build、推完还想在宿主机用的场景。`docker pull` 失败的话后面 login/tag/push/rmi/logout 都跳过（本地没图可推）；`docker rmi` / `docker logout` 失败只记日志，不影响任务成败。
 
-只跑一条命令。镜像必须已经存在于宿主 docker daemon 里 —— worker 不会帮你 `docker pull`，也**不会**在推完之后 `docker rmi`（那是你的镜像，不是我们临时拉的）：
+**Registry 级别的 project 前缀**在「Registry 管理 → 新增/编辑」中为每个 Registry 单独设置，留空则不追加。新建 Registry 时表单的默认值取自环境变量 `HARBOR_PROJECT`（缺省 `docker-proxy`）。
 
-```
-skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
-  docker-daemon:<source_image> \
-  docker://<registry.url>/<registry.project>/<dest_image> \
-  --dest-creds <username>:<password>
-```
-
-`--retry-times <N>` 在表单上可配（默认 `3`，范围 `0–10`；`0` 即不重试）。控制 skopeo 在网络抖动 / registry 5xx 等瞬时错误时的重试次数；默认值与 skopeo 自身一致 —— 想更早硬失败就调小，registry 不稳就调大。
-
-`registry.project` 在「Registry 管理 → 新增/编辑」中为每个 Registry 单独设置，留空则不追加前缀。
-新建 Registry 时表单的默认值取自环境变量 `HARBOR_PROJECT`（缺省 `docker-proxy`）。
-
-| 表单输入 | 实际流水线（`docker`） |
+| 表单输入 | 实际流水线 |
 | --- | --- |
-| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy --retry-times 3 docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
+| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy`<br>清理本地副本: 勾选 | `docker pull docker.io/library/nginx:1.27` → `docker login -u admin -p ******** harbor.company.local` → `docker tag docker.io/library/nginx:1.27 harbor.company.local/docker-proxy/nginx:1.27` → `docker push harbor.company.local/docker-proxy/nginx:1.27` → `docker rmi docker.io/library/nginx:1.27 harbor.company.local/docker-proxy/nginx:1.27` → `docker logout harbor.company.local` |
+| 同上，清理本地副本: 不勾 | 同上，但去掉 `docker rmi` 那一步。 |
 
-任务详情页会把整条流水线（含每条命令）按行展开，凭证已掩码。
+任务详情页会把整条流水线（含每条命令）按行展开，login 命令里的密码已掩码。
 
 > **目标镜像的命名规范**：
 > - 目标只填 `<image>:<tag>`，**不要带** `library/` 这类 Docker Hub 的 namespace 前缀。
@@ -149,9 +132,9 @@ skopeo copy [--multi-arch=all] [--dest-tls-verify=false] --retry-times <N> \
 > ```
 > 如果目标镜像已以 `<project>/` 开头（例如用户复制时带上了），不会重复追加。
 
-### 源类型 `docker` 但连不上 docker daemon
+### 连不上 docker daemon
 
-如果容器访问不到 docker daemon（比如为了安全把 `/var/run/docker.sock` 挂载注释掉了），任务会立即失败，报 `docker command not found` / `Cannot connect to the Docker daemon`。处理办法：要么改用源类型 `docker-daemon`（先用 `docker pull` / `docker load` 把镜像准备好），要么把 socket 挂回来 / 设 `DOCKER_HOST` 指向远端 daemon。
+如果容器访问不到 docker daemon（比如为了安全把 `/var/run/docker.sock` 挂载注释掉了），任务会立即失败，报 `docker command not found` / `Cannot connect to the Docker daemon`。处理办法：把 socket 挂回来，或设 `DOCKER_HOST` 指向可达的 daemon。
 
 ## 目录
 
