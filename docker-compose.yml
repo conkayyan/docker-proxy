@@ -6,6 +6,17 @@
 #   默认账号：admin / admin123（init 时自动建）
 #
 # 数据持久化：./data 挂到容器内 /app/instance（SQLite + Fernet key）
+#
+# ⚠️ /var/run/docker.sock 挂载：source_type=docker 需要容器能调宿主 docker
+# CLI 来跑 `docker pull` / `docker rmi`。挂载 socket 相当于把宿主 docker
+# 控制权交给容器内的 app 用户（可以起特权容器、挂载 / 等），属于等价 root
+# 的高权限授予 —— 私有部署可以接受，公网/多租户环境请改用 DOCKER_HOST
+# 连远端 docker daemon，或干脆只用 source_type=docker-daemon。
+#
+# 宿主 docker 组的 GID 常见是 999（Debian/Ubuntu 安装包默认）。Mac/Windows
+# Docker Desktop 也走 socket，但 GID 可能不同；如权限报错可加：
+#   group_add:
+#     - "<host docker 组的 GID>"
 
 services:
   docker-proxy:
@@ -21,11 +32,19 @@ services:
       - "5000:5000"
     volumes:
       - ./data:/app/instance
+      # 暴露宿主 docker daemon，让容器里的 docker CLI 能 pull / rmi 镜像。
+      # 不需要这个功能（只用 source_type=docker-daemon）就把这行注释掉。
+      - /var/run/docker.sock:/var/run/docker.sock
+    # 如果 docker.sock 的宿主 GID 不是 999，解除下面注释并填实际 GID：
+    # group_add:
+    #   - "999"
     environment:
       # 自定义 session 密钥；不设则每次启动随机（重启后旧 session 失效）
       SECRET_KEY: "change-me-in-prod"
       # 新建 Registry 时 project 字段的默认值
       HARBOR_PROJECT: "docker-proxy"
+      # 用远端 docker daemon 代替挂 socket：注释掉 socket 那行 + 取消下面注释
+      # DOCKER_HOST: "tcp://docker.example.com:2375"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/login', timeout=3)"]
       interval: 30s

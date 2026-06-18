@@ -9,13 +9,14 @@
 
 - 本地账号登录（SQLite，密码 `werkzeug` 哈希，**无注册入口，私有部署**）
 - 在 Web 上管理多个目标 Registry（地址 + 用户名 + 密码，加密落库）
-- 表单提交源镜像 + 目标镜像 + 目标 Registry，后台 worker 调用 `skopeo copy`
+- 表单提交源镜像 + 目标镜像 + 目标 Registry，后台 worker 按 pipeline 执行拷贝
 - 实时查看任务状态与日志（前端轮询）
 
 ## 依赖
 
 - Python 3.10+
 - `skopeo`（系统命令，需 `which skopeo` 可用；macOS 可 `brew install skopeo`）
+- 如果要用**源类型 `docker`**：还需要 `docker` CLI 能联通一个 docker daemon（见 [命令映射](#命令映射)）；只用 `docker-daemon` 则无需 docker
 
 ## 启动
 
@@ -43,7 +44,9 @@ docker compose up -d
 # 数据持久化在 ./data/ 目录（SQLite + Fernet key）
 ```
 
-镜像基于 `python:3.11-slim`，apt 装 skopeo；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。多架构：`linux/amd64` + `linux/arm64`。
+镜像基于 `python:3.11-slim`：apt 装 skopeo；从 `download.docker.com` 拉静态 docker CLI；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。多架构：`linux/amd64` + `linux/arm64`。
+
+> **`docker-compose.yml` 默认把 `/var/run/docker.sock` 挂进了容器**，源类型 `docker` 才能跑 `docker pull` / `docker rmi`。这等于把宿主 docker 控制权交给容器内的 app 用户（可起特权容器、挂载 / 等）—— 私有部署可接受；公网/多租户请参考 [源类型：docker](#源类型dockerdocker-cli--docker-daemon-流水线)。
 
 可用 tag：
 
@@ -75,6 +78,7 @@ docker compose up -d --build
 | --- | --- | --- |
 | `SECRET_KEY` | Flask session 密钥 | 随机（重启失效） |
 | `HARBOR_PROJECT` | 新建 Registry 时 project 字段的默认值 | `docker-proxy` |
+| `DOCKER_HOST` | 覆盖 `docker` CLI 用的 daemon 地址（如 `tcp://docker.example.com:2375`）。不设就走 `/var/run/docker.sock`。 | 未设 |
 
 ## 首次启动会自动
 
@@ -88,11 +92,32 @@ docker compose up -d --build
 
 ## 命令映射
 
-Web 表单字段 → 最终执行的 `skopeo` 命令：
+表单提供两种源类型，对应不同流水线。
+
+### 源类型 `docker`：docker CLI → docker-daemon 流水线
+
+> 要求容器内的 `docker` CLI 能连通一个 docker daemon：挂 `/var/run/docker.sock` 或设 `DOCKER_HOST`。`docker-compose.yml` 默认已经挂好。
+
+每次任务按顺序跑三条命令：
 
 ```
-skopeo copy [--dest-tls-verify=false] \
-  docker://<source_image> \
+docker pull <source_image>
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+  docker-daemon:<source_image> \
+  docker://<registry.url>/<registry.project>/<dest_image> \
+  --dest-creds <username>:<password>
+docker rmi <source_image>   # 清理；这一步失败不影响任务成败
+```
+
+中间的 `docker pull` 让这个模式很有用：可以直接复用宿主 `~/.docker/config.json` 里配好的镜像仓库镜像 / 鉴权；最后 `docker rmi` 顺手清掉本地副本，不挤占宿主磁盘。`docker pull` 失败的话后面 skopeo / rmi 都跳过（本地没图可推，也没东西可清）。
+
+### 源类型 `docker-daemon`
+
+只跑一条命令。镜像必须已经存在于宿主 docker daemon 里 —— worker 不会帮你 `docker pull`，也**不会**在推完之后 `docker rmi`（那是你的镜像，不是我们临时拉的）：
+
+```
+skopeo copy [--multi-arch=all] [--dest-tls-verify=false] \
+  docker-daemon:<source_image> \
   docker://<registry.url>/<registry.project>/<dest_image> \
   --dest-creds <username>:<password>
 ```
@@ -100,9 +125,11 @@ skopeo copy [--dest-tls-verify=false] \
 `registry.project` 在「Registry 管理 → 新增/编辑」中为每个 Registry 单独设置，留空则不追加前缀。
 新建 Registry 时表单的默认值取自环境变量 `HARBOR_PROJECT`（缺省 `docker-proxy`）。
 
-| 表单输入 | 实际执行 |
+| 表单输入 | 实际流水线（`docker`） |
 | --- | --- |
-| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `skopeo copy docker://docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:YourStrongPassword123` |
+| 源镜像: `docker.io/library/nginx:1.27`<br>目标镜像: `nginx:1.27`<br>Registry: `harbor.company.local`，project: `docker-proxy` | `docker pull docker.io/library/nginx:1.27` → `skopeo copy docker-daemon:docker.io/library/nginx:1.27 docker://harbor.company.local/docker-proxy/nginx:1.27 --dest-creds admin:********` → `docker rmi docker.io/library/nginx:1.27` |
+
+任务详情页会把整条流水线（含每条命令）按行展开，凭证已掩码。
 
 > **目标镜像的命名规范**：
 > - 目标只填 `<image>:<tag>`，**不要带** `library/` 这类 Docker Hub 的 namespace 前缀。
@@ -116,10 +143,14 @@ skopeo copy [--dest-tls-verify=false] \
 > ```
 > 如果目标镜像已以 `<project>/` 开头（例如用户复制时带上了），不会重复追加。
 
+### 源类型 `docker` 但连不上 docker daemon
+
+如果容器访问不到 docker daemon（比如为了安全把 `/var/run/docker.sock` 挂载注释掉了），任务会立即失败，报 `docker command not found` / `Cannot connect to the Docker daemon`。处理办法：要么改用源类型 `docker-daemon`（先用 `docker pull` / `docker load` 把镜像准备好），要么把 socket 挂回来 / 设 `DOCKER_HOST` 指向远端 daemon。
+
 ## 目录
 
 ```
-app.py                # Flask 主程序：模型、路由、worker
+app.py                # Flask 主程序：模型、路由、worker、流水线
 templates/            # Jinja2 模板
 static/style.css      # 基础样式
 instance/             # 运行时生成：SQLite + Fernet key（加入 .gitignore）

@@ -378,8 +378,8 @@ def _recover_unfinished_tasks() -> None:
 def _source_url(source_type: str, source_image: str) -> str:
     """根据源类型拼 skopeo 的 source URL。
 
-    - "docker"          → docker://nginx:1.27（从 registry 拉）
-    - "docker-daemon"   → docker-daemon:nginx:1.27（从本地 docker daemon 取）
+    - "docker"          → docker://nginx:1.27（逻辑源；实际执行走 docker pull + docker-daemon，参见 _build_pipeline）
+    - "docker-daemon"   → docker-daemon:nginx:1.27（直接从本地 docker daemon 取）
     其它值按 docker 处理，避免脏数据让 _build_command 抛错。
     """
     if source_type == "docker-daemon":
@@ -388,29 +388,66 @@ def _source_url(source_type: str, source_image: str) -> str:
 
 
 def _build_command(task: CopyTask) -> list[str]:
+    """构造 skopeo copy 命令本身（pipeline 中的核心一步）。
+
+    source_type="docker" 在 skopeo 这一步用 docker-daemon: 作为源，
+    因为 worker 在调用本命令之前已经 `docker pull` 到了本地。
+    完整多步骤流参见 _build_pipeline。
+    """
     cmd: list[str] = ["skopeo", "copy"]
     if task.multi_arch:
         cmd.append("--multi-arch=all")
     if not task.registry.verify_tls:
         cmd.append("--dest-tls-verify=false")
+    # "docker" 走 docker pull → docker-daemon 路径；只有 "docker-daemon"
+    # 才允许从用户原已存在的本地镜像里拷（用户自己负责保证镜像存在）。
     src_type = task.source_type or "docker"
-    cmd.append(_source_url(src_type, task.source_image))
+    skopeo_source_type = "docker-daemon" if src_type == "docker" else src_type
+    cmd.append(_source_url(skopeo_source_type, task.source_image))
     cmd.append(f"docker://{task.registry.url}/{_project_dest(task.dest_image, task.registry.project)}")
     cmd.extend(["--dest-creds", f"{task.registry.username}:{task.registry.get_password()}"])
     return cmd
 
 
+def _build_pipeline(task: CopyTask) -> list[tuple[str, list[str]]]:
+    """返回该任务实际要执行的命令列表（label, argv）。
+
+    - source_type="docker"        → [docker pull, skopeo copy (docker-daemon→target), docker rmi]
+                                     把远端镜像先拉到本地 docker daemon，再用 docker-daemon 作 skopeo
+                                     源去推；推完清掉本地镜像节省磁盘。
+    - source_type="docker-daemon" → [skopeo copy (docker-daemon→target)]
+                                     用户原已存在的本地镜像直接推；不删，因为可能是用户其他场景要用的。
+
+    中间任何一步失败：pull 失败 → 后面两步跳过；skopeo 失败 → rmi 仍执行清理；rmi 失败只记日志，不影响任务成败。
+    """
+    skopeo_cmd = _build_command(task)
+    src_type = task.source_type or "docker"
+    if src_type == "docker":
+        return [
+            (_("docker pull (fetch source image locally)"), ["docker", "pull", task.source_image]),
+            (_("skopeo copy (docker-daemon → target)"), skopeo_cmd),
+            (_("docker rmi (cleanup local copy)"), ["docker", "rmi", task.source_image]),
+        ]
+    return [
+        (_("skopeo copy (docker-daemon → target)"), skopeo_cmd),
+    ]
+
+
 def _display_command(task: CopyTask) -> str:
     """为 UI 拼接展示用的命令字符串（密码已掩码）。
 
-    始终基于 task 的结构化字段（source_image / dest_image / multi_arch / registry）
-    重新生成，不读 DB 也不缓存。任务还没启动时返回 "(not yet generated)"。
+    始终基于 task 的结构化字段重新生成 pipeline，不读 DB 也不缓存。
+    任务还没启动时返回 "(not yet generated)"。
     """
     if task.status == "pending":
         return _("(not yet generated)")
     if task.registry is None:
         return _("(registry was deleted, cannot rebuild command)")
-    return _mask_command_str(_build_command(task))
+    lines: list[str] = []
+    for label, args in _build_pipeline(task):
+        lines.append(f"# {label}")
+        lines.append(_mask_command_str(args))
+    return "\n".join(lines)
 
 
 # 这些 token 后面接的下一个参数是凭证，保存到 DB / 展示时必须掩盖
@@ -587,6 +624,79 @@ def delete_all_tags(registry: Registry, repo: str) -> tuple[int, int, list[str]]
     return ok, len(tags) - ok, errors
 
 
+def _flush_task_log(task: CopyTask, log_lines: list[str]) -> None:
+    """把内存里的 log_lines 节流落库（含掩码）。"""
+    task.log = _mask_log_str("\n".join(log_lines))
+    db.session.commit()
+
+
+def _run_step(task: CopyTask, args: list[str], log_lines: list[str]) -> int:
+    """跑一个流水线步骤（拉、推、清），流式把 stdout/stderr 写进 log_lines。
+
+    返回子进程 returncode（OSError 起进程失败时返回 -1）。同步刷新 task.subprocess_pid
+    和 heartbeat_at，让 watchdog 能在卡住时 SIGTERM 当前正在跑的子进程。
+    """
+    # bufsize=0 + os.read：text=True/bufsize=1 是 line-buffered，只在 \n 到达
+    # 时 yield —— 而 skopeo / docker 的进度条 [=>--] 是用 \r 原地刷新的，中间
+    # 没 \n，那段窗口里心跳会停。改读原始字节，任意 chunk 都算进度。
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+    except OSError as e:
+        log_lines.append(f"Failed to start {args[0] if args else 'process'}: {e}")
+        return -1
+
+    task.subprocess_pid = proc.pid
+    task.heartbeat_at = datetime.utcnow()
+    db.session.commit()
+
+    assert proc.stdout is not None
+    stdout_fd = proc.stdout.fileno()
+    buf = b""
+    last_flush = 0.0
+    while True:
+        try:
+            chunk = os.read(stdout_fd, 4096)
+        except OSError:
+            # pipe 已被子进程关闭 = EOF
+            break
+        if not chunk:
+            break
+        # 任何字节都算子进程还在干活，立刻更新心跳（仅 in-memory，
+        # 落库交给下面 1.5s 节流 + ticker 共同保证，避免狂 commit）
+        task.heartbeat_at = datetime.utcnow()
+        buf += chunk
+        while b"\n" in buf:
+            nl_idx = buf.index(b"\n")
+            line_buf = buf[:nl_idx]
+            buf = buf[nl_idx + 1:]
+            if line_buf.endswith(b"\r"):
+                line_buf = line_buf[:-1]
+            cr_idx = line_buf.rfind(b"\r")
+            if cr_idx != -1:
+                line_buf = line_buf[cr_idx + 1:]
+            if line_buf:
+                log_lines.append(line_buf.decode("utf-8", errors="replace"))
+        # 节流落库：每 5 行 或 每 1.5 秒
+        now = time.monotonic()
+        if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
+            _flush_task_log(task, log_lines)
+            last_flush = now
+    # EOF：把最后一段没 \n 收尾的也写进 log
+    if buf:
+        cr_idx = buf.rfind(b"\r")
+        if cr_idx != -1:
+            buf = buf[cr_idx + 1:]
+        if buf:
+            log_lines.append(buf.decode("utf-8", errors="replace"))
+    proc.wait()
+    return proc.returncode
+
+
 def _run_task(task_id: int) -> None:
     with app.app_context():
         task: CopyTask | None = db.session.get(CopyTask, task_id)
@@ -598,40 +708,33 @@ def _run_task(task_id: int) -> None:
         task.heartbeat_at = datetime.utcnow()
         db.session.commit()
 
-        cmd = _build_command(task)
-        # 子进程实际调用用原始 cmd（包含真实密码，仅在内存中传给 skopeo）。
-        # 不再存 task.command 到 DB；UI 上要展示时由 _display_command() 重新拼接 + 掩码。
-
+        # 预检：必备外部命令
+        src_type = task.source_type or "docker"
         if shutil.which("skopeo") is None:
             task.status = "failed"
             task.error = "skopeo command not found. Install first: brew install skopeo"
             task.finished_at = datetime.utcnow()
             db.session.commit()
             return
-
-        log_lines: list[str] = []
-        try:
-            # bufsize=0 + os.read：text=True/bufsize=1 是 line-buffered，
-            # 只在 \n 到达时 yield —— 而 skopeo 的进度条 [=>--] 是用 \r 原地刷新
-            # 的，中间没 \n，那段窗口里心跳会停。改读原始字节，任意 chunk 都算进度。
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
-            )
-            # 记录子进程 PID，给 watchdog 用于 SIGTERM；同步刷新一次心跳
-            task.subprocess_pid = proc.pid
-            task.heartbeat_at = datetime.utcnow()
-            db.session.commit()
-        except OSError as e:
+        if src_type == "docker" and shutil.which("docker") is None:
             task.status = "failed"
-            task.error = f"Failed to start skopeo: {e}"
+            task.error = (
+                "docker command not found. source_type=docker requires docker CLI to "
+                "pull the image locally before pushing via skopeo docker-daemon. "
+                "Install Docker, or switch source_type to docker-daemon if the image "
+                "is already present locally."
+            )
             task.finished_at = datetime.utcnow()
             db.session.commit()
             return
 
-        # ticker：独立于 stdout 的心跳线程。skopeo v2 拷贝时切完 blob 就沉默
+        pipeline = _build_pipeline(task)
+        # pipeline 里 skopeo copy 那一格的索引 —— 它的成败决定任务最终状态。
+        main_step_index = next(
+            i for i, (label, _) in enumerate(pipeline) if label.startswith("skopeo copy")
+        )
+
+        # ticker：独立于 stdout 的心跳线程。skopeo / docker pull 切完 blob 就沉默
         # 好几分钟传数据，主线程 os.read 卡住没法自己刷心跳 + 没法 commit，
         # 靠 ticker 每 5s commit 一次 heartbeat 到 DB 来保命。
         stop_ticker = threading.Event()
@@ -640,74 +743,58 @@ def _run_task(task_id: int) -> None:
         )
         ticker.start()
 
+        log_lines: list[str] = []
+        skopeo_rc: int = 0  # 主步骤的 returncode
+        early_aborted = False
         try:
-            assert proc.stdout is not None
-            stdout_fd = proc.stdout.fileno()
-            buf = b""
-            last_flush = 0.0
-            while True:
-                try:
-                    chunk = os.read(stdout_fd, 4096)
-                except OSError:
-                    # pipe 已被子进程关闭 = EOF
-                    break
-                if not chunk:
-                    break
-                # 任何字节都算 skopeo 还在干活，立刻更新心跳（仅 in-memory，
-                # 落库交给下面 1.5s 节流 + ticker 共同保证，避免狂 commit）
-                task.heartbeat_at = datetime.utcnow()
-                buf += chunk
-                # 切出 \n 结尾的完整行。每行内部如有 \r，表示 skopeo 原地
-                # 刷新过进度条，只保留最后一段（最近 \r 之后的内容）——
-                # 中间被覆盖的状态对运维没用，写进 log 也只是噪音。
-                while b"\n" in buf:
-                    nl_idx = buf.index(b"\n")
-                    line_buf = buf[:nl_idx]
-                    buf = buf[nl_idx + 1 :]
-                    if line_buf.endswith(b"\r"):
-                        line_buf = line_buf[:-1]
-                    cr_idx = line_buf.rfind(b"\r")
-                    if cr_idx != -1:
-                        line_buf = line_buf[cr_idx + 1 :]
-                    if line_buf:
-                        log_lines.append(line_buf.decode("utf-8", errors="replace"))
-                # 节流落库：每 5 行 或 每 1.5 秒
-                now = time.monotonic()
-                if len(log_lines) % 5 == 0 or (now - last_flush) > 1.5:
-                    task.log = _mask_log_str("\n".join(log_lines))
-                    task.heartbeat_at = datetime.utcnow()
-                    db.session.commit()
-                    last_flush = now
-            # EOF：把最后一段没 \n 收尾的也写进 log
-            if buf:
-                cr_idx = buf.rfind(b"\r")
-                if cr_idx != -1:
-                    buf = buf[cr_idx + 1 :]
-                if buf:
-                    log_lines.append(buf.decode("utf-8", errors="replace"))
-            proc.wait()
-            task.log = _mask_log_str("\n".join(log_lines))
-            task.finished_at = datetime.utcnow()
+            for i, (label, args) in enumerate(pipeline):
+                log_lines.append(f"=== [{i + 1}/{len(pipeline)}] {label} ===")
+                log_lines.append(f"$ {_mask_command_str(args)}")
+                _flush_task_log(task, log_lines)
 
-            # 看门狗可能已在我们 wait 期间把状态改成 failed / success（如有其他
-            # 进程接手、或者 watchdog 因心跳超时介入）。重新从 DB 读一次，避免
-            # 覆盖外部写入。
+                # 清掉上一个 step 的 PID，watchdog 看到 None 就不会误杀上一个已退出进程
+                task.subprocess_pid = None
+                db.session.commit()
+
+                rc = _run_step(task, args, log_lines)
+                log_lines.append(f"--- exit code: {rc} ---")
+
+                if i == main_step_index:
+                    skopeo_rc = rc
+                elif i < main_step_index and rc != 0:
+                    # 前置步骤（pull）失败 → 后续 skopeo / rmi 直接跳过。
+                    # rmi 即便跑也是 "No such image" 没意义。
+                    log_lines.append("(previous step failed; skipping remaining steps)")
+                    early_aborted = True
+                    break
+
+            # 看门狗可能已在我们跑期间把状态改了（如心跳超时介入）。
+            # 重新从 DB 读一次，避免覆盖外部写入。
             current = db.session.get(CopyTask, task_id)
             if current is None or current.status != "running":
                 return
 
-            task.return_code = proc.returncode
-            if proc.returncode == 0:
+            task.subprocess_pid = None
+            task.return_code = skopeo_rc
+            task.finished_at = datetime.utcnow()
+            if early_aborted:
+                # 错误信息已在 _run_step 输出里写明（log_lines 已落库）；
+                # 这里只保留简短 summary。
+                task.status = "failed"
+                if not task.error:
+                    task.error = "docker pull failed; cannot proceed to skopeo copy"
+            elif skopeo_rc == 0:
                 task.status = "success"
             else:
                 task.status = "failed"
-                task.error = f"skopeo exited with code {proc.returncode}"
+                task.error = f"skopeo exited with code {skopeo_rc}"
         except Exception as e:  # pragma: no cover
             task.status = "failed"
             task.error = f"Execution error: {e}"
             task.finished_at = datetime.utcnow()
         finally:
             stop_ticker.set()
+            _flush_task_log(task, log_lines)
             db.session.commit()
 
 
