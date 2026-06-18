@@ -2,16 +2,13 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-#  pull_request:
-#    branches: [main]
   workflow_dispatch:
 
 # 避免同 workflow 的旧 run 同时跑（ghcr.io 不喜欢同 tag 并发 push）
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -20,8 +17,6 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # PR 只做 build，不 push（要 push 把 if 改成 always()）
-    if: github.event_name != 'pull_request'
 
     permissions:
       contents: read
@@ -50,14 +45,17 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            # main 分支打 latest
-            type=raw,value=latest,enable={{is_default_branch}}
-            # 分支名（sanitize 后）
-            type=ref,event=branch
-            # tag v1.2.3 -> 1.2.3, latest, v1, v1.2
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+            # tag 推送时刷 latest（避免 latest 卡住）
+            # 用 GitHub Actions 原生表达式而不是 Handlebars 的 {{is_tag}}——后者在某些
+            # v5 版本里渲染为空字符串，会报 "Invalid value for enable attribute"
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # 一条通用正则：吃掉 v 前缀，把剩下的数字段（任意段数、每段任意位数）原样保留。
+            #   v1            -> 1
+            #   v1.0          -> 1.0
+            #   v1.11         -> 1.11
+            #   v1.11.1.1.001 -> 1.11.1.1.001
+            #   v1.0.0-rc.1   -> 1.0.0（正则停在前缀边界，-rc.1 被丢掉；要保留得加 ?:-...）
+            type=match,pattern=v(\d+(?:\.\d+)*),group=1
             # 短 SHA 永远打一个
             type=sha,format=short
 
