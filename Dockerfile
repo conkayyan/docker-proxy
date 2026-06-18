@@ -53,7 +53,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 再拷代码（依赖没变就不会重装）
-COPY app.py .
+# i18n.py 必须和 app.py 一起 COPY —— app.py 第一行就 `from i18n import ...`，
+# 漏了容器启动直接 ModuleNotFoundError。
+COPY app.py i18n.py ./
 COPY templates/ ./templates/
 COPY static/ ./static/
 
