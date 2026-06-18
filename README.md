@@ -34,13 +34,40 @@ python app.py
 
 ### Option B: Docker (recommended for private deployment)
 
+The image is published to GitHub Container Registry on every push to `main` and on `v*` tags.
+
 ```bash
-docker compose up -d --build
+# Pull the prebuilt image and start (no local build needed)
+docker compose up -d
 # Open http://localhost:5000 in your browser
 # Data is persisted in ./data/ (SQLite + Fernet key)
 ```
 
-The image is based on `python:3.11-slim`, installs skopeo via apt, runs as a non-root user (uid 1000), and includes a healthcheck (probes `/login` every 30s).
+The image is based on `python:3.11-slim`, installs skopeo via apt, runs as a non-root user (uid 1000), and includes a healthcheck (probes `/login` every 30s). Multi-arch: `linux/amd64` and `linux/arm64`.
+
+Available tags:
+
+| Tag | When pushed |
+| --- | --- |
+| `latest` | every push to `main` |
+| `main` | every push to `main` |
+| `vX.Y.Z`, `vX.Y`, `vX` | every `v*` tag (e.g. `git tag v1.2.3 && git push --tags`) |
+| `<sha>` | every build |
+
+Pin a version in `docker-compose.yml` by changing `image: ghcr.io/conkayyan/docker-proxy:latest` to e.g. `:v1.2.3`.
+
+> **The image is private by default.** Make it public at https://github.com/users/conkayyan/packages/container/docker-proxy/settings (or log in with a PAT that has `read:packages`) to pull without auth.
+
+#### Build from source
+
+If you'd rather build locally (e.g. you forked the repo or need a custom image):
+
+```bash
+# In docker-compose.yml: comment out the `image:` line and uncomment the `build: .` line
+docker compose up -d --build
+# Equivalent standalone: docker build -t docker-proxy . && docker run -d -p 5000:5000 \
+#   -v "$(pwd)/data:/app/instance" --name docker-proxy docker-proxy:latest
+```
 
 Environment variables (edit in `docker-compose.yml`):
 

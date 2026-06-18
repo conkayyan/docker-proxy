@@ -34,13 +34,40 @@ python app.py
 
 ### 方式 B：Docker（推荐私有部署）
 
+每次 push 到 `main` 或打 `v*` tag，CI 都会把镜像推到 GitHub Container Registry。
+
 ```bash
-docker compose up -d --build
+# 直接拉预构建镜像启动（不需要本地 build）
+docker compose up -d
 # 浏览器打开 http://localhost:5000
 # 数据持久化在 ./data/ 目录（SQLite + Fernet key）
 ```
 
-镜像基于 `python:3.11-slim`，apt 装 skopeo；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。
+镜像基于 `python:3.11-slim`，apt 装 skopeo；以非 root 用户（uid 1000）跑；自带 healthcheck（30s 探一次 `/login`）。多架构：`linux/amd64` + `linux/arm64`。
+
+可用 tag：
+
+| Tag | 触发 |
+| --- | --- |
+| `latest` | 每次 push 到 `main` |
+| `main` | 每次 push 到 `main` |
+| `vX.Y.Z`、`vX.Y`、`vX` | 每次打 `v*` tag（例：`git tag v1.2.3 && git push --tags`） |
+| `<sha>` | 每次 build |
+
+要锁版本，改 `docker-compose.yml` 里的 `image: ghcr.io/conkayyan/docker-proxy:latest` 为例如 `:v1.2.3`。
+
+> **镜像默认私有**。要在免登录下拉取，去 https://github.com/users/conkayyan/packages/container/docker-proxy/settings 改成 Public（或用一个有 `read:packages` 权限的 PAT 登录）。
+
+#### 本地构建
+
+如果想自己 build（比如 fork 后改东西）：
+
+```bash
+# 在 docker-compose.yml 里：注释掉 image 行，打开 build: . 行
+docker compose up -d --build
+# 等价独立命令：docker build -t docker-proxy . && docker run -d -p 5000:5000 \
+#   -v "$(pwd)/data:/app/instance" --name docker-proxy docker-proxy:latest
+```
 
 环境变量（docker-compose.yml 里改）：
 

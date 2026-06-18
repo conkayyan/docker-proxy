@@ -1,6 +1,7 @@
 # docker-proxy — 单服务 compose
+# 默认从 ghcr.io 拉预构建镜像；想本地构建见 README "Build from source"。
 # 用法：
-#   docker compose up -d --build
+#   docker compose up -d
 #   浏览器打开 http://localhost:5000
 #   默认账号：admin / admin123（init 时自动建）
 #
@@ -8,9 +9,13 @@
 
 services:
   docker-proxy:
-    build: .
-    image: docker-proxy:latest
+    # 预构建镜像（CI 推送到 ghcr.io，详见 .github/workflows/docker-build.yml）
+    # 改 tag 可以锁版本，比如 :v1.2.3 或 :main-<sha>
+    image: ghcr.io/conkayyan/docker-proxy:latest
     container_name: docker-proxy
+    # 本地构建就打开下面三行，注释掉上面的 image：
+    # build: .
+    # image: docker-proxy:latest
     restart: unless-stopped
     ports:
       - "5000:5000"
