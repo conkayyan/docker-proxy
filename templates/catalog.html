@@ -1,38 +1,38 @@
 {% extends "base.html" %}
-{% block title %}镜像列表 · {{ registry.name }} · docker-proxy{% endblock %}
+{% block title %}{{ _("Images · %(name)s · docker-proxy", name=registry.name) }}{% endblock %}
 {% block content %}
 <div class="card">
   <div class="card-head">
     <div>
       <h1 style="margin-bottom:.25rem;">{{ registry.name }}</h1>
-      <div class="mono hint">{{ registry.url }} · {{ registry.username }} {% if not registry.verify_tls %}<span class="badge badge-failed">⚠ 跳过 TLS</span>{% endif %}</div>
+      <div class="mono hint">{{ registry.url }} · {{ registry.username }} {% if not registry.verify_tls %}<span class="badge badge-failed">{{ _("⚠ skip TLS") }}</span>{% endif %}</div>
     </div>
     <div class="row-actions">
-      <a class="btn" href="{{ url_for('registries_list') }}">返回</a>
+      <a class="btn" href="{{ url_for('registries_list') }}">{{ _("Back") }}</a>
     </div>
   </div>
 
   {% if error %}
   <div class="alert alert-warn">
-    ⚠️ 读取 catalog 失败：{{ error }}
+    {{ _("⚠️ Failed to read catalog: %(error)s", error=error) }}
     <div style="margin-top:.5rem;">
-      <a class="btn small" href="{{ url_for('registry_catalog', rid=registry.id) }}">🔄 重新拉取</a>
-      <a class="btn small" href="{{ url_for('registries_edit', rid=registry.id) }}">✏️ 更新账号密码</a>
+      <a class="btn small" href="{{ url_for('registry_catalog', rid=registry.id) }}">{{ _("🔄 Retry") }}</a>
+      <a class="btn small" href="{{ url_for('registries_edit', rid=registry.id) }}">{{ _("✏️ Update credentials") }}</a>
     </div>
   </div>
   {% endif %}
 
   {% if not error and total_repos == 0 %}
-  <p class="hint">该 Registry 中暂无任何仓库。</p>
+  <p class="hint">{{ _("No repositories in this Registry yet.") }}</p>
   {% endif %}
 
   {% if repos %}
-  <p class="hint">共 {{ total_repos }} 个仓库。点击"查看 tag"展开。</p>
+  <p class="hint">{{ _("%(total)s repositories. Click \"view tags\" to expand.", total=total_repos) }}</p>
   <table class="data">
     <thead>
       <tr>
-        <th>仓库 (repo)</th>
-        <th>tag 数</th>
+        <th>{{ _("Repository (repo)") }}</th>
+        <th>{{ _("tag count") }}</th>
         <th></th>
       </tr>
     </thead>
@@ -44,32 +44,32 @@
         </td>
         <td>{{ tags|length if tags is not none else '—' }}</td>
         <td class="row-actions">
-          <form method="post" action="{{ url_for('registry_image_delete', rid=registry.id) }}" onsubmit="return confirm('确认删除整个仓库 {{ repo }} 的所有 tag？该操作不可撤销。');" style="display:inline;">
+          <form method="post" action="{{ url_for('registry_image_delete', rid=registry.id) }}" onsubmit="return confirm({{ _('Confirm delete ALL tags under repository %(repo)s? This cannot be undone.', repo=repo)|tojson }});" style="display:inline;">
             <input type="hidden" name="repo" value="{{ repo }}" />
             <input type="hidden" name="scope" value="repo" />
-            <button type="submit" class="btn small danger">删除整个仓库</button>
+            <button type="submit" class="btn small danger">{{ _("Delete entire repo") }}</button>
           </form>
         </td>
       </tr>
       <tr id="tags-{{ loop.index }}" hidden>
         <td colspan="3" style="background:#f9fafb; padding:.4rem 1rem;">
           {% if tags is none %}
-            <span class="hint">tag 加载失败</span>
+            <span class="hint">{{ _("tag load failed") }}</span>
           {% elif tags %}
             <ul class="tag-list">
               {% for tag in tags %}
               <li>
                 <code class="mono">{{ tag }}</code>
-                <form method="post" action="{{ url_for('registry_image_delete', rid=registry.id) }}" onsubmit="return confirm('确认删除 {{ repo }}:{{ tag }} ？');" style="display:inline;">
+                <form method="post" action="{{ url_for('registry_image_delete', rid=registry.id) }}" onsubmit="return confirm({{ _('Confirm delete %(repo)s:%(tag)s?', repo=repo, tag=tag)|tojson }});" style="display:inline;">
                   <input type="hidden" name="repo" value="{{ repo }}" />
                   <input type="hidden" name="tag" value="{{ tag }}" />
-                  <button type="submit" class="btn small danger">删除</button>
+                  <button type="submit" class="btn small danger">{{ _("Delete") }}</button>
                 </form>
               </li>
               {% endfor %}
             </ul>
           {% else %}
-            <span class="hint">该仓库没有任何 tag。</span>
+            <span class="hint">{{ _("This repository has no tags.") }}</span>
           {% endif %}
         </td>
       </tr>

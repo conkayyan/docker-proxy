@@ -1,25 +1,25 @@
 {% extends "base.html" %}
-{% block title %}{{ '编辑' if mode == 'edit' else '新增' }} Registry · docker-proxy{% endblock %}
+{% block title %}{% if mode == 'edit' %}{{ _("Edit Registry · docker-proxy") }}{% else %}{{ _("Add Registry · docker-proxy") }}{% endif %}{% endblock %}
 {% block content %}
 <div class="card narrow">
-  <h1>{{ '编辑' if mode == 'edit' else '新增' }} Registry</h1>
+  <h1>{% if mode == 'edit' %}{{ _("Edit Registry") }}{% else %}{{ _("Add Registry") }}{% endif %}</h1>
   <form method="post">
     {{ form.hidden_tag() }}
     <label>
-      <span>名称</span>
+      <span>{{ _("Name") }}</span>
       {{ form.name(autofocus=true) }}
     </label>
     <label>
-      <span>Registry 地址</span>
+      <span>{{ _("Registry address") }}</span>
       {{ form.url(placeholder="harbor.company.local") }}
       <small>{{ form.url.description }}</small>
     </label>
     <label>
-      <span>用户名</span>
+      <span>{{ _("Username") }}</span>
       {{ form.username(autocomplete="off") }}
     </label>
     <label>
-      <span>密码{% if mode == 'edit' %}（留空表示不修改）{% endif %}</span>
+      <span>{% if mode == 'edit' %}{{ _("Password (leave blank to keep unchanged)") }}{% else %}{{ _("Password") }}{% endif %}</span>
       {{ form.password(autocomplete="new-password") }}
     </label>
     <label class="checkbox">
@@ -27,16 +27,16 @@
       <span>{{ form.verify_tls.label.text }}</span>
     </label>
     <small class="hint" style="display:block; margin:-0.5rem 0 1rem 1.6rem;">
-      默认勾选 = 校验 TLS 证书（生产环境推荐）。自签证书 / 内网环境请取消勾选。
+      {{ _("Default checked = verify TLS certificate (recommended for production). Uncheck for self-signed / intranet.") }}
     </small>
     <label>
-      <span>项目路径前缀 (project)</span>
+      <span>{{ _("Project path prefix (project)") }}</span>
       {{ form.project(placeholder="docker-proxy") }}
       <small>{{ form.project.description }}</small>
     </label>
     <div class="row-actions">
-      <button type="submit" class="btn primary">保存</button>
-      <a class="btn" href="{{ url_for('registries_list') }}">取消</a>
+      <button type="submit" class="btn primary">{{ _("Save") }}</button>
+      <a class="btn" href="{{ url_for('registries_list') }}">{{ _("Cancel") }}</a>
     </div>
   </form>
 </div>

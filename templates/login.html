@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}登录 · docker-proxy{% endblock %}
+{% block title %}{{ _("Login · docker-proxy") }}{% endblock %}
 {% block content %}
 <div class="card narrow">
-  <h1>登录</h1>
+  <h1>{{ _("Login") }}</h1>
   <form method="post">
     {{ form.hidden_tag() }}
     <label>
-      <span>用户名</span>
+      <span>{{ _("Username") }}</span>
       {{ form.username(autofocus=true, autocomplete="username") }}
     </label>
     <label>
-      <span>密码</span>
+      <span>{{ _("Password") }}</span>
       {{ form.password(autocomplete="current-password") }}
     </label>
     {{ form.submit(class_="btn primary block") }}

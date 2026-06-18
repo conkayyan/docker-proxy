@@ -1,83 +1,82 @@
 {% extends "base.html" %}
-{% block title %}镜像拷贝 · docker-proxy{% endblock %}
+{% block title %}{{ _("Image Copy · docker-proxy") }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h1>镜像拷贝</h1>
+  <h1>{{ _("Image Copy") }}</h1>
 
   {% if not skopeo_ok %}
   <div class="alert alert-warn">
-    ⚠️ 未检测到 <code>skopeo</code> 命令，任务提交后会立即失败。
-    macOS 安装：<code>brew install skopeo</code>。
+    {{ _("⚠️ `skopeo` command not found; tasks will fail immediately on submit. macOS: %(install)s.", install="<code>brew install skopeo</code>")|safe }}
   </div>
   {% endif %}
 
   {% if not registries %}
   <div class="alert alert-info">
-    还没有目标 Registry —— <a href="{{ url_for('registries_create') }}">先添加一个</a>。
+    {{ _("No target Registry yet — %(link_start)sadd one first%(link_end)s.", link_start='<a href="' ~ url_for('registries_create') ~ '">', link_end='</a>')|safe }}
   </div>
   {% else %}
   <form method="post" action="{{ url_for('copy_create') }}" class="form-grid">
     <label class="full">
-      <span>目标 Registry</span>
+      <span>{{ _("Target Registry") }}</span>
       <select name="registry_id" required>
         {% for r in registries %}
-          <option value="{{ r.id }}">{{ r.name }} — {{ r.url }}{% if r.project %} [project={{ r.project }}]{% endif %}{% if not r.verify_tls %} (跳过 TLS){% endif %}</option>
+          <option value="{{ r.id }}">{{ r.name }} — {{ r.url }}{% if r.project %} [project={{ r.project }}]{% endif %}{% if not r.verify_tls %} ({{ _("skip TLS") }}){% endif %}</option>
         {% endfor %}
       </select>
     </label>
 
     <div class="full form-row-3">
       <div class="field">
-        <label for="source_type">源类型</label>
+        <label for="source_type">{{ _("Source type") }}</label>
         <select id="source_type" name="source_type">
           <option value="docker" selected>docker</option>
           <option value="docker-daemon">docker-daemon</option>
         </select>
       </div>
       <div class="field">
-        <label for="source_image">源镜像</label>
+        <label for="source_image">{{ _("Source image") }}</label>
         <input id="source_image" type="text" name="source_image" required placeholder="docker.io/library/nginx:1.27" />
       </div>
       <div class="field">
-        <label for="dest_image">目标镜像</label>
+        <label for="dest_image">{{ _("Destination image") }}</label>
         <input id="dest_image" type="text" name="dest_image" required placeholder="nginx:1.27" />
       </div>
     </div>
     <small class="full hint">
-      <code>docker</code>： 完整路径如 <code>docker.io/(library/|project/)image:tag</code>；
+      {{ _("`docker`: full path like `docker.io/(library/|project/)image:tag`;") }}
     </small>
     <small class="full hint">
-      <code>docker-daemon</code>： 只需填本地的image:tag，如 <code>(library/|project/)image:tag</code>。
+      {{ _("`docker-daemon`: only the local image:tag, e.g. `(library/|project/)image:tag`.") }}
     </small>
     <small class="full hint">
-      目标镜像只需填写image:tag，提交后会拼上对应的Registry 的 url 和 project 前缀。
+      {{ _("Destination only needs image:tag; the selected Registry's URL and project prefix are appended on submit.") }}
     </small>
 
     <label class="checkbox full">
       <input type="checkbox" name="multi_arch" value="1" />
-      <span>多架构 (--multi-arch all)</span>
+      <span>{{ _("Multi-arch (--multi-arch all)") }}</span>
       <small style="display:block; color:var(--muted); margin-left:1.6rem;">
-        推送整张 manifest list（amd64 / arm64 / armv7 等）。在 Mac ARM 上推 nginx 等多架构镜像时建议勾选。
+        {{ _("Push the full manifest list (amd64 / arm64 / armv7, etc). Recommended when pushing multi-arch images like nginx from an ARM Mac.") }}
       </small>
     </label>
 
     <div class="full">
-      <button type="submit" class="btn primary">开始拷贝</button>
+      <button type="submit" class="btn primary">{{ _("Start Copy") }}</button>
     </div>
   </form>
   {% endif %}
 </div>
 
 <div class="card">
-  <h2>最近任务</h2>
+  <h2>{{ _("Recent tasks") }}</h2>
   {% if tasks %}
   <table class="data">
     <thead>
       <tr>
         <th>#</th>
-        <th>状态</th>
-        <th>源 → 目标</th>
-        <th>创建时间</th>
+        <th>{{ _("Status") }}</th>
+        <th>{{ _("Source → Destination") }}</th>
+        <th>{{ _("Created at") }}</th>
         <th></th>
       </tr>
     </thead>
@@ -89,10 +88,10 @@
         <td class="mono cell-image">[{{ t.source_type or 'docker' }}] {{ t.source_image }} → {{ t.registry.url }}/{{ project_dest(t.dest_image, t.registry.project) }}</td>
         <td class="cell-created">{{ t.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions cell-actions">
-          <a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">查看</a>
+          <a class="btn small" href="{{ url_for('task_detail', task_id=t.id) }}">{{ _("View") }}</a>
           {% if t.status not in ('pending', 'running') %}
-          <form method="post" action="{{ url_for('task_delete', task_id=t.id) }}" onsubmit="return confirm('确认删除任务 #{{ t.id }} 的记录？');" style="display:inline;">
-            <button type="submit" class="btn small danger">删除</button>
+          <form method="post" action="{{ url_for('task_delete', task_id=t.id) }}" onsubmit="return confirm({{ _('Confirm delete task #%(id)s?', id=t.id)|tojson }});" style="display:inline;">
+            <button type="submit" class="btn small danger">{{ _("Delete") }}</button>
           </form>
           {% endif %}
         </td>
@@ -101,7 +100,7 @@
     </tbody>
   </table>
   {% else %}
-    <p class="hint">暂无任务。</p>
+    <p class="hint">{{ _("No tasks yet.") }}</p>
   {% endif %}
 </div>
 
@@ -113,6 +112,8 @@
     var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr[data-task-id]'));
     if (!rows.length) return;
     var knownIds = rows.map(function (r) { return r.dataset.taskId; });
+    var deleteLabel = {{ _("Delete")|tojson }};
+    var confirmDeleteTpl = {{ _("Confirm delete task #%(id)s?", id="__ID__")|tojson }};
 
     function fmt(dt) {
       if (!dt) return '';
@@ -124,9 +125,9 @@
       var form = document.createElement('form');
       form.method = 'post';
       form.action = '/tasks/' + id + '/delete';
-      form.onsubmit = function () { return confirm('确认删除任务 #' + id + ' 的记录？'); };
+      form.onsubmit = function () { return confirm(confirmDeleteTpl.replace('__ID__', id)); };
       form.style.display = 'inline';
-      form.innerHTML = '<button type="submit" class="btn small danger">删除</button>';
+      form.innerHTML = '<button type="submit" class="btn small danger">' + deleteLabel + '</button>';
       row.querySelector('.cell-actions').appendChild(form);
     }
 

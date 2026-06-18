@@ -1,22 +1,22 @@
 {% extends "base.html" %}
-{% block title %}Registry 管理 · docker-proxy{% endblock %}
+{% block title %}{{ _("Registry Management · docker-proxy") }}{% endblock %}
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <h1>Registry 管理</h1>
-    <a class="btn primary" href="{{ url_for('registries_create') }}">+ 新增</a>
+    <h1>{{ _("Registry Management") }}</h1>
+    <a class="btn primary" href="{{ url_for('registries_create') }}">{{ _("+ Add") }}</a>
   </div>
 
   {% if items %}
   <table class="data">
     <thead>
       <tr>
-        <th>名称</th>
-        <th>地址</th>
-        <th>用户名</th>
-        <th>项目路径</th>
+        <th>{{ _("Name") }}</th>
+        <th>{{ _("Address") }}</th>
+        <th>{{ _("Username") }}</th>
+        <th>{{ _("Project path") }}</th>
         <th>TLS</th>
-        <th>创建时间</th>
+        <th>{{ _("Created at") }}</th>
         <th></th>
       </tr>
     </thead>
@@ -29,17 +29,17 @@
         <td class="mono">{{ r.project or '—' }}</td>
         <td>
           {% if r.verify_tls %}
-            <span class="badge badge-success" title="默认：校验 TLS 证书">🔒 校验</span>
+            <span class="badge badge-success" title="{{ _('Default: verify TLS certificate') }}">{{ _("🔒 verify") }}</span>
           {% else %}
-            <span class="badge badge-failed" title="已跳过 TLS 证书校验（自签/内网）">⚠ 跳过</span>
+            <span class="badge badge-failed" title="{{ _('TLS verification skipped (self-signed / intranet)') }}">{{ _("⚠ skip") }}</span>
           {% endif %}
         </td>
         <td>{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td class="row-actions">
-          <a class="btn small" href="{{ url_for('registry_catalog', rid=r.id) }}">镜像</a>
-          <a class="btn small" href="{{ url_for('registries_edit', rid=r.id) }}">编辑</a>
-          <form method="post" action="{{ url_for('registries_delete', rid=r.id) }}" onsubmit="return confirm('确定删除该 Registry 配置？');">
-            <button type="submit" class="btn small danger">删除</button>
+          <a class="btn small" href="{{ url_for('registry_catalog', rid=r.id) }}">{{ _("Images") }}</a>
+          <a class="btn small" href="{{ url_for('registries_edit', rid=r.id) }}">{{ _("Edit") }}</a>
+          <form method="post" action="{{ url_for('registries_delete', rid=r.id) }}" onsubmit="return confirm({{ _('Confirm delete this Registry configuration?')|tojson }});">
+            <button type="submit" class="btn small danger">{{ _("Delete") }}</button>
           </form>
         </td>
       </tr>
@@ -47,7 +47,7 @@
     </tbody>
   </table>
   {% else %}
-    <p class="hint">还没有 Registry。</p>
+    <p class="hint">{{ _("No Registry yet.") }}</p>
   {% endif %}
 </div>
 {% endblock %}

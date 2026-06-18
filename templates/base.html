@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{ 'zh-CN' if get_locale() == 'zh' else 'en' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,13 +11,28 @@
   <header class="topbar">
     <div class="brand"><a href="{{ url_for('dashboard') }}">🐳 docker-proxy</a></div>
     <nav>
-      <a href="{{ url_for('dashboard') }}">镜像拷贝</a>
-      <a href="{{ url_for('registries_list') }}">Registry 管理</a>
-      {% if current_user.is_admin %}<a href="{{ url_for('admin_users') }}">账号管理</a>{% endif %}
-      <a href="{{ url_for('account') }}">我的账号</a>
-      <a href="{{ url_for('logout') }}">退出（{{ current_user.username }}）</a>
+      <a href="{{ url_for('dashboard') }}">{{ _("Image Copy") }}</a>
+      <a href="{{ url_for('registries_list') }}">{{ _("Registry Management") }}</a>
+      {% if current_user.is_admin %}<a href="{{ url_for('admin_users') }}">{{ _("User Management") }}</a>{% endif %}
+      <a href="{{ url_for('account') }}">{{ _("My Account") }}</a>
+      <a href="{{ url_for('logout') }}">{{ _("Log out (%(name)s)", name=current_user.username) }}</a>
+      <span class="lang-switch">
+        {% if get_locale() == 'zh' %}
+          <a href="{{ url_for('set_lang', code='en') }}">English</a> | <strong>中文</strong>
+        {% else %}
+          <strong>English</strong> | <a href="{{ url_for('set_lang', code='zh') }}">中文</a>
+        {% endif %}
+      </span>
     </nav>
   </header>
+  {% else %}
+  <div class="lang-switch lang-switch-anon">
+    {% if get_locale() == 'zh' %}
+      <a href="{{ url_for('set_lang', code='en') }}">English</a> | <strong>中文</strong>
+    {% else %}
+      <strong>English</strong> | <a href="{{ url_for('set_lang', code='zh') }}">中文</a>
+    {% endif %}
+  </div>
   {% endif %}
 
   <main class="container">
@@ -35,7 +50,7 @@
   </main>
 
   <footer class="footer">
-    <small>&copy; {{ current_year }} docker-proxy · 本地工具</small>
+    <small>&copy; {{ current_year }} docker-proxy · {{ _("Local tool") }}</small>
   </footer>
 </body>
 </html>

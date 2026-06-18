@@ -1,20 +1,20 @@
 {% extends "base.html" %}
-{% block title %}账号管理 · docker-proxy{% endblock %}
+{% block title %}{{ _("User Management · docker-proxy") }}{% endblock %}
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <h1>账号管理</h1>
-    <a class="btn" href="{{ url_for('account') }}">个人信息</a>
+    <h1>{{ _("User Management") }}</h1>
+    <a class="btn" href="{{ url_for('account') }}">{{ _("Account") }}</a>
   </div>
 
-  <h2 style="font-size:1.05rem; margin-top:0;">现有账号</h2>
+  <h2 style="font-size:1.05rem; margin-top:0;">{{ _("Existing accounts") }}</h2>
   <table class="data">
     <thead>
       <tr>
-        <th>用户名</th>
-        <th>角色</th>
-        <th>注册时间</th>
-        <th>操作</th>
+        <th>{{ _("Username") }}</th>
+        <th>{{ _("Role") }}</th>
+        <th>{{ _("Registered at") }}</th>
+        <th>{{ _("Operations") }}</th>
       </tr>
     </thead>
     <tbody>
@@ -22,22 +22,22 @@
       <tr>
         <td class="mono">{{ u.username }}</td>
         <td>
-          {% if u.is_admin %}<span class="badge badge-success">管理员</span>
-          {% else %}<span class="badge">普通用户</span>{% endif %}
+          {% if u.is_admin %}<span class="badge badge-success">{{ _("Admin") }}</span>
+          {% else %}<span class="badge">{{ _("Regular user") }}</span>{% endif %}
         </td>
         <td>{{ u.created_at.strftime('%Y-%m-%d %H:%M:%S') if u.created_at else '—' }}</td>
         <td class="row-actions" style="flex-direction:row; flex-wrap:wrap; gap:.4rem;">
-          <a class="btn small" href="{{ url_for('admin_user_reset', uid=u.id) }}">重置密码</a>
+          <a class="btn small" href="{{ url_for('admin_user_reset', uid=u.id) }}">{{ _("Reset password") }}</a>
           {% if u.id != current_user.id and not (u.is_admin and admin_count <= 1) %}
-          <form method="post" action="{{ url_for('admin_user_toggle_admin', uid=u.id) }}" onsubmit="return confirm('确认修改 {{ u.username }} 的管理员身份？');" style="display:inline;">
+          <form method="post" action="{{ url_for('admin_user_toggle_admin', uid=u.id) }}" onsubmit="return confirm({{ _('Confirm change admin status of %(name)s?', name=u.username)|tojson }});" style="display:inline;">
             <button type="submit" class="btn small">
-              {% if u.is_admin %}取消管理员{% else %}设为管理员{% endif %}
+              {% if u.is_admin %}{{ _("Revoke admin") }}{% else %}{{ _("Grant admin") }}{% endif %}
             </button>
           </form>
           {% endif %}
           {% if u.id != current_user.id and not (u.is_admin and admin_count <= 1) %}
-          <form method="post" action="{{ url_for('admin_user_delete', uid=u.id) }}" onsubmit="return confirm('确认删除用户 {{ u.username }} ？');" style="display:inline;">
-            <button type="submit" class="btn small danger">删除</button>
+          <form method="post" action="{{ url_for('admin_user_delete', uid=u.id) }}" onsubmit="return confirm({{ _('Confirm delete user %(name)s?', name=u.username)|tojson }});" style="display:inline;">
+            <button type="submit" class="btn small danger">{{ _("Delete") }}</button>
           </form>
           {% endif %}
         </td>
@@ -48,28 +48,28 @@
 </div>
 
 <div class="card">
-  <h2 style="font-size:1.05rem; margin-top:0;">新建账号</h2>
+  <h2 style="font-size:1.05rem; margin-top:0;">{{ _("Create account") }}</h2>
   <form method="post" class="form-grid">
     {{ form.hidden_tag() }}
     <label>
-      <span>用户名（3-80 字符）</span>
+      <span>{{ _("Username (3-80 chars)") }}</span>
       {{ form.username(autocomplete="off") }}
     </label>
     <label>
-      <span>密码（至少 6 位）</span>
+      <span>{{ _("Password (min 6 chars)") }}</span>
       {{ form.password(autocomplete="new-password") }}
     </label>
     <label>
-      <span>确认密码</span>
+      <span>{{ _("Confirm password") }}</span>
       {{ form.confirm(autocomplete="new-password") }}
     </label>
     <label class="checkbox full" style="align-items:center;">
       {{ form.is_admin() }}
-      <span>授予管理员权限</span>
+      <span>{{ _("Grant admin privileges") }}</span>
     </label>
     <div class="full row-actions" style="flex-direction:row; gap:.4rem;">
       {{ form.submit(class_="btn primary") }}
-      <a class="btn" href="{{ url_for('admin_users') }}">取消</a>
+      <a class="btn" href="{{ url_for('admin_users') }}">{{ _("Cancel") }}</a>
     </div>
   </form>
 </div>

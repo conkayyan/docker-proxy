@@ -1,51 +1,51 @@
 {% extends "base.html" %}
-{% block title %}任务 #{{ task.id }} · docker-proxy{% endblock %}
+{% block title %}{{ _("Task #%(id)s · docker-proxy", id=task.id) }}{% endblock %}
 {% block content %}
 <div class="card">
   <div class="card-head">
-    <h1>任务 #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span>
-      {% if task.status == 'running' %}<span id="live-dot" class="live-dot" title="正在轮询">●</span>{% endif %}
+    <h1>{{ _("Task") }} #{{ task.id }} <span class="badge badge-{{ task.status }}" id="status-badge">{{ task.status }}</span>
+      {% if task.status == 'running' %}<span id="live-dot" class="live-dot" title="{{ _('polling') }}">●</span>{% endif %}
     </h1>
     <div class="row-actions">
       <small id="last-polled" class="hint">—</small>
-      <a class="btn small" href="{{ url_for('dashboard') }}">返回</a>
+      <a class="btn small" href="{{ url_for('dashboard') }}">{{ _("Back") }}</a>
       {# 两个 form 永远渲染，由 JS tick() 根据状态切换显隐。#}
       <form id="retry-form" method="post" action="{{ url_for('task_retry', task_id=task.id) }}" style="display:{% if task.status == 'failed' %}inline{% else %}none{% endif %};">
-        <button type="submit" class="btn small primary">重试</button>
+        <button type="submit" class="btn small primary">{{ _("Retry") }}</button>
       </form>
-      <form id="delete-form" method="post" action="{{ url_for('task_delete', task_id=task.id) }}" onsubmit="return confirm('确认删除任务 #{{ task.id }} 的记录？');" style="display:{% if task.status in ('success','failed') %}inline{% else %}none{% endif %};">
-        <button type="submit" class="btn small danger">删除</button>
+      <form id="delete-form" method="post" action="{{ url_for('task_delete', task_id=task.id) }}" onsubmit="return confirm({{ _('Confirm delete task #%(id)s?', id=task.id)|tojson }});" style="display:{% if task.status in ('success','failed') %}inline{% else %}none{% endif %};">
+        <button type="submit" class="btn small danger">{{ _("Delete") }}</button>
       </form>
     </div>
   </div>
 
   <div id="pending-alert" class="alert alert-info" style="display:{% if task.status == 'pending' %}block{% else %}none{% endif %};">
-    ⏳ 任务已加入队列，等待 worker 拾起…
+    {{ _("⏳ Task queued, waiting for worker…") }}
   </div>
 
   <dl class="kv">
-    <dt>源类型</dt><dd><span class="badge">{{ task.source_type or 'docker' }}</span></dd>
-    <dt>源镜像</dt><dd class="mono">{{ task.source_image }}</dd>
-    <dt>目标</dt><dd class="mono">{{ task.registry.url }}/{{ project_dest(task.dest_image, task.registry.project) }}</dd>
-    <dt>Registry</dt><dd>{{ task.registry.name }}（{{ task.registry.username }}）</dd>
-    <dt>创建</dt><dd>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</dd>
-    <dt>开始</dt><dd id="started-at">{% if task.started_at %}{{ task.started_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
-    <dt>结束</dt><dd id="finished-at">{% if task.finished_at %}{{ task.finished_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
-    <dt>退出码</dt><dd id="return-code">{{ task.return_code if task.return_code is not none else '' }}</dd>
+    <dt>{{ _("Source type") }}</dt><dd><span class="badge">{{ task.source_type or 'docker' }}</span></dd>
+    <dt>{{ _("Source") }}</dt><dd class="mono">{{ task.source_image }}</dd>
+    <dt>{{ _("Destination") }}</dt><dd class="mono">{{ task.registry.url }}/{{ project_dest(task.dest_image, task.registry.project) }}</dd>
+    <dt>{{ _("Registry") }}</dt><dd>{{ task.registry.name }}（{{ task.registry.username }}）</dd>
+    <dt>{{ _("Created") }}</dt><dd>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</dd>
+    <dt>{{ _("Started") }}</dt><dd id="started-at">{% if task.started_at %}{{ task.started_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
+    <dt>{{ _("Finished") }}</dt><dd id="finished-at">{% if task.finished_at %}{{ task.finished_at.strftime('%Y-%m-%d %H:%M:%S') }}{% endif %}</dd>
+    <dt>{{ _("Exit code") }}</dt><dd id="return-code">{{ task.return_code if task.return_code is not none else '' }}</dd>
   </dl>
 
   <details open>
-    <summary>命令</summary>
+    <summary>{{ _("Command") }}</summary>
     <pre class="log mono" id="command-pre">{{ display_command }}</pre>
   </details>
 
   <details open>
-    <summary>日志</summary>
-    <pre class="log mono" id="log-pre">{{ task.log or '(暂无输出)' }}</pre>
+    <summary>{{ _("Log") }}</summary>
+    <pre class="log mono" id="log-pre">{{ task.log or _("(no output yet)") }}</pre>
   </details>
 
   <div id="error-block" {% if not task.error %}hidden{% endif %}>
-    <h3>错误</h3>
+    <h3>{{ _("Error") }}</h3>
     <pre class="log error mono">{{ task.error }}</pre>
   </div>
 </div>
@@ -67,6 +67,8 @@
     var deleteForm = document.getElementById('delete-form');
     var pendingAlert = document.getElementById('pending-alert');
     var flashes = document.getElementById('flashes');
+    var refreshedTpl = {{ _("Refreshed at %(time)s", time="__T__")|tojson }};
+    var pollingLabel = {{ _("polling")|tojson }};
 
     function setBadge(s) {
       badge.textContent = s;
@@ -78,7 +80,7 @@
     }
 
     function markPolled() {
-      lastPolled.textContent = '刷新于 ' + fmtTime(new Date());
+      lastPolled.textContent = refreshedTpl.replace('__T__', fmtTime(new Date()));
       if (liveDot) liveDot.style.opacity = '1';
     }
 
@@ -116,7 +118,7 @@
               dot = document.createElement('span');
               dot.id = 'live-dot';
               dot.className = 'live-dot';
-              dot.title = '正在轮询';
+              dot.title = pollingLabel;
               dot.textContent = '●';
               badge.insertAdjacentText('afterend', '');
               badge.parentNode.insertBefore(dot, badge.nextSibling);

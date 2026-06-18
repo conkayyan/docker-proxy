@@ -23,6 +23,7 @@ from requests.auth import HTTPBasicAuth
 from flask import (
     Flask,
     flash,
+    g,
     jsonify,
     make_response,
     redirect,
@@ -44,6 +45,16 @@ from flask_wtf import FlaskForm
 from wtforms import BooleanField, PasswordField, StringField, SubmitField
 from wtforms.validators import DataRequired, EqualTo, Length, Optional
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from i18n import (
+    LOCALE_COOKIE,
+    LOCALE_COOKIE_MAX_AGE,
+    SUPPORTED_LOCALES,
+    _,
+    _l,
+    get_locale,
+    resolve_locale_from_request,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,88 +182,88 @@ class CopyTask(db.Model):
 
 
 class LoginForm(FlaskForm):
-    username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
-    password = PasswordField("密码", validators=[DataRequired()])
-    submit = SubmitField("登录")
+    username = StringField(_l("Username"), validators=[DataRequired(), Length(1, 80)])
+    password = PasswordField(_l("Password"), validators=[DataRequired()])
+    submit = SubmitField(_l("Login"))
 
 
 class ChangePasswordForm(FlaskForm):
-    current_password = PasswordField("当前密码", validators=[DataRequired()])
+    current_password = PasswordField(_l("Current password"), validators=[DataRequired()])
     new_password = PasswordField(
-        "新密码", validators=[DataRequired(), Length(min=6, max=128)]
+        _l("New password (min 6 chars)"), validators=[DataRequired(), Length(min=6, max=128)]
     )
     confirm = PasswordField(
-        "确认新密码",
-        validators=[DataRequired(), EqualTo("new_password", message="两次输入不一致")],
+        _l("Confirm new password"),
+        validators=[DataRequired(), EqualTo("new_password", message=_l("Two entries do not match"))],
     )
-    submit = SubmitField("修改密码")
+    submit = SubmitField(_l("Change password"))
 
 
 class AdminCreateUserForm(FlaskForm):
-    username = StringField("用户名", validators=[DataRequired(), Length(3, 80)])
+    username = StringField(_l("Username"), validators=[DataRequired(), Length(3, 80)])
     password = PasswordField(
-        "密码", validators=[DataRequired(), Length(min=6, max=128)]
+        _l("Password"), validators=[DataRequired(), Length(min=6, max=128)]
     )
     confirm = PasswordField(
-        "确认密码",
-        validators=[DataRequired(), EqualTo("password", message="两次输入不一致")],
+        _l("Confirm password"),
+        validators=[DataRequired(), EqualTo("password", message=_l("Two entries do not match"))],
     )
-    is_admin = BooleanField("授予管理员权限")
-    submit = SubmitField("创建账号")
+    is_admin = BooleanField(_l("Grant admin privileges"))
+    submit = SubmitField(_l("Create account"))
 
 
 class AdminResetPasswordForm(FlaskForm):
     new_password = PasswordField(
-        "新密码", validators=[DataRequired(), Length(min=6, max=128)]
+        _l("New password (min 6 chars)"), validators=[DataRequired(), Length(min=6, max=128)]
     )
     confirm = PasswordField(
-        "确认密码",
-        validators=[DataRequired(), EqualTo("new_password", message="两次输入不一致")],
+        _l("Confirm password"),
+        validators=[DataRequired(), EqualTo("new_password", message=_l("Two entries do not match"))],
     )
-    submit = SubmitField("重置密码")
+    submit = SubmitField(_l("Reset password"))
 
 
 class RegistryForm(FlaskForm):
-    name = StringField("名称", validators=[DataRequired(), Length(1, 80)])
+    name = StringField(_l("Name"), validators=[DataRequired(), Length(1, 80)])
     url = StringField(
-        "Registry 地址",
+        _l("Registry address"),
         validators=[DataRequired(), Length(3, 200)],
-        description="例如 harbor.company.local",
+        description=_l("e.g. harbor.company.local"),
     )
-    username = StringField("用户名", validators=[DataRequired(), Length(1, 80)])
+    username = StringField(_l("Username"), validators=[DataRequired(), Length(1, 80)])
     # 编辑模式下留空 = 不修改密码（路由层判断）。新建模式下必填（路由层校验）。
-    password = PasswordField("密码", validators=[Optional(), Length(max=1024)])
+    password = PasswordField(_l("Password"), validators=[Optional(), Length(max=1024)])
     # 校验 TLS 证书：默认勾选 = 安全默认；自签证书 / 内网环境可取消勾选。
     verify_tls = BooleanField(
-        "校验 TLS 证书（推荐勾选；自签证书 / 内网环境请取消）",
+        _l("Verify TLS certificate (recommended; uncheck for self-signed / intranet)"),
         default=True,
     )
     project = StringField(
-        "项目路径前缀",
+        _l("Project path prefix (project)"),
         validators=[Length(0, 120)],
         default=DEFAULT_PROJECT,
-        description="推送时自动加在目标镜像前。例如 docker-proxy → 实际推送为 docker-proxy/nginx:1.27；留空则不追加。",
+        description=_l("Auto-prepended to the destination image on push. e.g. docker-proxy → pushed as docker-proxy/nginx:1.27; leave blank to skip."),
     )
-    submit = SubmitField("保存")
+    submit = SubmitField(_l("Save"))
 
 
 class CopyForm(FlaskForm):
-    registry_id = StringField("目标 Registry", validators=[DataRequired()])
+    registry_id = StringField(_l("Target Registry"), validators=[DataRequired()])
     source_image = StringField(
-        "源镜像",
+        _l("Source image"),
         validators=[DataRequired()],
-        description="例如 docker.io/library/nginx:1.27（Docker Hub 官方镜像的完整路径）",
+        description=_l("e.g. docker.io/library/nginx:1.27 (full path of a Docker Hub official image)"),
     )
     dest_image = StringField(
-        "目标镜像",
+        _l("Destination image"),
         validators=[DataRequired()],
-        description="例如 nginx:1.27（仅 image:tag，project 由所选 Registry 自动追加）",
+        description=_l("e.g. nginx:1.27 (only image:tag; project is auto-appended by the selected Registry)"),
     )
     multi_arch = BooleanField(
-        "多架构 (--multi-arch all)",
-        description="推送整张 manifest list（amd64 / arm64 / armv7 等）。在 Mac ARM 上推 nginx 等多架构镜像时建议勾选。",
+        _l("Multi-arch (--multi-arch all)"),
+        description=_l("Push the full manifest list (amd64 / arm64 / armv7, etc). Recommended when pushing multi-arch images like nginx from an ARM Mac."),
     )
-    submit = SubmitField("开始拷贝")
+    submit = SubmitField(_l("Start Copy"))
 
 
 # ---------------------------------------------------------------------------
@@ -352,13 +363,13 @@ def _recover_unfinished_tasks() -> None:
         running = CopyTask.query.filter(CopyTask.status == "running").all()
         for task in running:
             task.status = "failed"
-            task.error = "服务重启时检测到上一次会话未完成的任务，已自动标记为失败"
+            task.error = "Detected unfinished task from previous session at startup; auto-marked as failed"
             task.finished_at = now
         # pending：上一次会话还没轮到跑的，统一判失败，由用户主动重试
         pending = CopyTask.query.filter(CopyTask.status == "pending").all()
         for task in pending:
             task.status = "failed"
-            task.error = "服务重启时检测到上一次会话未启动的任务，已自动标记为失败"
+            task.error = "Detected unstarted task from previous session at startup; auto-marked as failed"
             task.finished_at = now
         if running or pending:
             db.session.commit()
@@ -393,12 +404,12 @@ def _display_command(task: CopyTask) -> str:
     """为 UI 拼接展示用的命令字符串（密码已掩码）。
 
     始终基于 task 的结构化字段（source_image / dest_image / multi_arch / registry）
-    重新生成，不读 DB 也不缓存。任务还没启动时返回 "(尚未生成)"。
+    重新生成，不读 DB 也不缓存。任务还没启动时返回 "(not yet generated)"。
     """
     if task.status == "pending":
-        return "(尚未生成)"
+        return _("(not yet generated)")
     if task.registry is None:
-        return "(registry 已被删除，无法重建命令)"
+        return _("(registry was deleted, cannot rebuild command)")
     return _mask_command_str(_build_command(task))
 
 
@@ -464,7 +475,7 @@ def _project_dest(dest_image: str, project: str = "") -> str:
 
 def _skopeo_or_raise() -> None:
     if shutil.which("skopeo") is None:
-        raise RuntimeError("skopeo 命令未找到。请先安装：brew install skopeo")
+        raise RuntimeError(_("skopeo command not found. Install first: brew install skopeo"))
 
 
 def _tls_flag(verify_tls: bool) -> list[str]:
@@ -494,18 +505,13 @@ def list_registry_catalog(registry: Registry) -> list[str]:
         )
         if resp.status_code == 404:
             raise RuntimeError(
-                f"{registry.url} 未启用 catalog API（404）。"
-                "Harbor：项目设置 → 允许清单（'Enable catalog'）；"
-                "部分 Registry 干脆没实现此接口。"
+                _("%(url)s does not have the catalog API enabled (404). Harbor: project settings → allow catalog ('Enable catalog'); some registries simply do not implement this API.", url=registry.url)
             )
         if resp.status_code in (401, 403):
             # 401 = 凭证不被认可；403 = 凭证有效但无权限。
             # 阿里云 ACR 个人版：临时密码 1 小时过期，过期后即 401。
             raise RuntimeError(
-                f"鉴权失败：HTTP {resp.status_code} @ {registry.url}。"
-                "最常见原因：① 临时密码已过期（控制台 → 访问凭证 → "
-                "重新生成临时密码，再在 Registry 编辑页保存）；"
-                "② 当前账号对该 Registry 命名空间缺少读权限。"
+                _("Auth failed: HTTP %(code)s @ %(url)s. Most common causes: ① the temporary password has expired (console → access credentials → regenerate, then save on the Registry edit page); ② the current account has no read permission on this Registry namespace.", code=resp.status_code, url=registry.url)
             )
         resp.raise_for_status()
         data = resp.json()
@@ -542,12 +548,12 @@ def list_repo_tags(registry: Registry, repo: str) -> list[str]:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"list-tags 失败：{proc.stderr.strip() or proc.stdout.strip()}"
+            _("list-tags failed: %(msg)s", msg=proc.stderr.strip() or proc.stdout.strip())
         )
     try:
         return json.loads(proc.stdout).get("Tags", []) or []
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"无法解析 skopeo 输出：{e}")
+        raise RuntimeError(_("Cannot parse skopeo output: %(err)s", err=e))
 
 
 def delete_image(registry: Registry, repo: str, tag: str) -> tuple[bool, str]:
@@ -598,7 +604,7 @@ def _run_task(task_id: int) -> None:
 
         if shutil.which("skopeo") is None:
             task.status = "failed"
-            task.error = "skopeo 命令未找到。请先安装：brew install skopeo"
+            task.error = "skopeo command not found. Install first: brew install skopeo"
             task.finished_at = datetime.utcnow()
             db.session.commit()
             return
@@ -620,7 +626,7 @@ def _run_task(task_id: int) -> None:
             db.session.commit()
         except OSError as e:
             task.status = "failed"
-            task.error = f"启动 skopeo 失败：{e}"
+            task.error = f"Failed to start skopeo: {e}"
             task.finished_at = datetime.utcnow()
             db.session.commit()
             return
@@ -695,10 +701,10 @@ def _run_task(task_id: int) -> None:
                 task.status = "success"
             else:
                 task.status = "failed"
-                task.error = f"skopeo 退出码 {proc.returncode}"
+                task.error = f"skopeo exited with code {proc.returncode}"
         except Exception as e:  # pragma: no cover
             task.status = "failed"
-            task.error = f"执行异常：{e}"
+            task.error = f"Execution error: {e}"
             task.finished_at = datetime.utcnow()
         finally:
             stop_ticker.set()
@@ -767,8 +773,8 @@ def _check_hung_tasks() -> None:
         for task in stale:
             task.status = "failed"
             task.error = (
-                f"任务超过 {HEARTBEAT_TIMEOUT_SEC}s 未上报心跳，"
-                "worker/skopeo 可能已挂起，已自动标记为失败"
+                f"Task had no heartbeat for over {HEARTBEAT_TIMEOUT_SEC}s; "
+                "worker/skopeo may have hung, auto-marked as failed"
             )
             task.finished_at = now
             if task.subprocess_pid:
@@ -831,7 +837,7 @@ def admin_required(fn):
     @login_required
     def wrapper(*args, **kwargs):
         if not current_user.is_admin:
-            flash("需要管理员权限", "error")
+            flash(_("Admin permission required"), "error")
             return redirect(url_for("dashboard"))
         return fn(*args, **kwargs)
 
@@ -846,7 +852,7 @@ def login():
     if form.validate_on_submit():
         user = User.query.filter_by(username=form.username.data.strip()).first()
         if user is None or not user.check_password(form.password.data):
-            flash("用户名或密码错误", "error")
+            flash(_("Invalid username or password"), "error")
         else:
             login_user(user)
             return redirect(url_for("dashboard"))
@@ -872,11 +878,11 @@ def account():
     form = ChangePasswordForm()
     if form.validate_on_submit():
         if not current_user.check_password(form.current_password.data):
-            flash("当前密码错误", "error")
+            flash(_("Current password is incorrect"), "error")
         else:
             current_user.set_password(form.new_password.data)
             db.session.commit()
-            flash("密码已更新", "success")
+            flash(_("Password updated"), "success")
             return redirect(url_for("account"))
     return render_template("account.html", form=form)
 
@@ -889,13 +895,13 @@ def admin_users():
     if form.validate_on_submit():
         username = form.username.data.strip()
         if User.query.filter_by(username=username).first():
-            flash("用户已存在", "error")
+            flash(_("User already exists"), "error")
         else:
             u = User(username=username, is_admin=form.is_admin.data)
             u.set_password(form.password.data)
             db.session.add(u)
             db.session.commit()
-            flash(f"已创建用户 {username}", "success")
+            flash(_("User %(name)s created", name=username), "success")
             return redirect(url_for("admin_users"))
     users = User.query.order_by(User.created_at.asc()).all()
     admin_count = User.query.filter_by(is_admin=True).count()
@@ -912,13 +918,13 @@ def admin_users():
 def admin_user_reset(uid: int):
     target = db.session.get(User, uid)
     if target is None:
-        flash("用户不存在", "error")
+        flash(_("User does not exist"), "error")
         return redirect(url_for("admin_users"))
     form = AdminResetPasswordForm()
     if form.validate_on_submit():
         target.set_password(form.new_password.data)
         db.session.commit()
-        flash(f"已重置 {target.username} 的密码", "success")
+        flash(_("Password for %(name)s has been reset", name=target.username), "success")
         return redirect(url_for("admin_users"))
     return render_template("admin_user_reset.html", form=form, target=target)
 
@@ -928,19 +934,19 @@ def admin_user_reset(uid: int):
 def admin_user_delete(uid: int):
     target = db.session.get(User, uid)
     if target is None:
-        flash("用户不存在", "error")
+        flash(_("User does not exist"), "error")
     elif target.id == current_user.id:
-        flash("不能删除当前登录的账号", "error")
+        flash(_("Cannot delete the currently logged-in account"), "error")
     elif target.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
-        flash("不能删除最后一个管理员", "error")
+        flash(_("Cannot delete the last admin"), "error")
     else:
         # 先数一下该用户的任务数（cascade 在 commit 时会自动删，但提示用户更友好）
         task_count = CopyTask.query.filter_by(user_id=target.id).count()
         username = target.username
         db.session.delete(target)  # cascade="all, delete-orphan" 会带删 CopyTask
         db.session.commit()
-        suffix = f"（含 {task_count} 个任务记录）" if task_count else ""
-        flash(f"已删除用户 {username}{suffix}", "success")
+        suffix = _(" (including %(count)s task records)", count=task_count) if task_count else ""
+        flash(_("User %(name)s deleted%(suffix)s", name=username, suffix=suffix), "success")
     return redirect(url_for("admin_users"))
 
 
@@ -949,16 +955,16 @@ def admin_user_delete(uid: int):
 def admin_user_toggle_admin(uid: int):
     target = db.session.get(User, uid)
     if target is None:
-        flash("用户不存在", "error")
+        flash(_("User does not exist"), "error")
     elif target.id == current_user.id:
-        flash("不能修改自己的管理员身份", "error")
+        flash(_("Cannot change your own admin status"), "error")
     elif target.is_admin and User.query.filter_by(is_admin=True).count() <= 1:
-        flash("不能取消最后一个管理员", "error")
+        flash(_("Cannot revoke the last admin"), "error")
     else:
         target.is_admin = not target.is_admin
         db.session.commit()
-        state = "管理员" if target.is_admin else "普通用户"
-        flash(f"{target.username} 已设为 {state}", "success")
+        state = _("Admin") if target.is_admin else _("Regular user")
+        flash(_("%(name)s is now %(role)s", name=target.username, role=state), "success")
     return redirect(url_for("admin_users"))
 
 
@@ -982,7 +988,7 @@ def registries_create():
         form.project.data = DEFAULT_PROJECT
     if form.validate_on_submit():
         if not (form.password.data or "").strip():
-            flash("新建 Registry 时密码不能为空", "error")
+            flash(_("Password cannot be empty when creating a Registry"), "error")
             return render_template("registry_form.html", form=form, mode="new")
         reg = Registry(
             name=form.name.data.strip(),
@@ -994,7 +1000,7 @@ def registries_create():
         reg.set_password(form.password.data)
         db.session.add(reg)
         db.session.commit()
-        flash("Registry 已保存", "success")
+        flash(_("Registry saved"), "success")
         return redirect(url_for("registries_list"))
     return render_template("registry_form.html", form=form, mode="new")
 
@@ -1004,7 +1010,7 @@ def registries_create():
 def registries_edit(rid: int):
     reg: Registry | None = db.session.get(Registry, rid)
     if reg is None:
-        flash("Registry 不存在", "error")
+        flash(_("Registry does not exist"), "error")
         return redirect(url_for("registries_list"))
     form = RegistryForm()
     if request.method == "GET":
@@ -1028,7 +1034,7 @@ def registries_edit(rid: int):
         if form.password.data:
             reg.set_password(form.password.data)
         db.session.commit()
-        flash("已更新", "success")
+        flash(_("Updated"), "success")
         return redirect(url_for("registries_list"))
     return render_template("registry_form.html", form=form, mode="edit", registry=reg)
 
@@ -1038,14 +1044,14 @@ def registries_edit(rid: int):
 def registries_delete(rid: int):
     reg = db.session.get(Registry, rid)
     if reg is None:
-        flash("Registry 不存在", "error")
+        flash(_("Registry does not exist"), "error")
     else:
         if reg.tasks:
-            flash("该 Registry 仍有任务记录，无法删除", "error")
+            flash(_("Registry still has task records and cannot be deleted"), "error")
         else:
             db.session.delete(reg)
             db.session.commit()
-            flash("已删除", "success")
+            flash(_("Deleted"), "success")
     return redirect(url_for("registries_list"))
 
 
@@ -1059,7 +1065,7 @@ def registries_delete(rid: int):
 def registry_catalog(rid: int):
     reg = db.session.get(Registry, rid)
     if reg is None:
-        flash("Registry 不存在", "error")
+        flash(_("Registry does not exist"), "error")
         return redirect(url_for("registries_list"))
 
     repos_with_tags: list[tuple[str, list[str] | None, str | None]] = []
@@ -1087,7 +1093,7 @@ def registry_catalog(rid: int):
 def registry_image_delete(rid: int):
     reg = db.session.get(Registry, rid)
     if reg is None:
-        flash("Registry 不存在", "error")
+        flash(_("Registry does not exist"), "error")
         return redirect(url_for("registries_list"))
 
     repo = (request.form.get("repo") or "").strip().lstrip("/")
@@ -1095,31 +1101,31 @@ def registry_image_delete(rid: int):
     delete_repo = request.form.get("scope") == "repo"
 
     if not repo:
-        flash("缺少 repo 名称", "error")
+        flash(_("Missing repo name"), "error")
         return redirect(url_for("registry_catalog", rid=rid))
 
     try:
         if delete_repo:
             ok, fail, errors = delete_all_tags(reg, repo)
             if fail == 0 and ok > 0:
-                flash(f"已删除仓库 {repo} 下的 {ok} 个 tag", "success")
+                flash(_("Deleted %(ok)s tags under repository %(repo)s", ok=ok, repo=repo), "success")
             elif ok == 0 and fail == 0:
-                flash(f"仓库 {repo} 没有任何 tag", "info")
+                flash(_("Repository %(repo)s has no tags", repo=repo), "info")
             else:
+                errs = _(" Errors: %(errs)s", errs="; ".join(errors[:3])) if errors else ""
                 flash(
-                    f"仓库 {repo}：成功 {ok}，失败 {fail}。"
-                    + (" 错误：" + "; ".join(errors[:3]) if errors else ""),
+                    _("Repository %(repo)s: %(ok)s ok, %(fail)s failed.%(errs)s", repo=repo, ok=ok, fail=fail, errs=errs),
                     "error",
                 )
         else:
             if not tag:
-                flash("缺少 tag", "error")
+                flash(_("Missing tag"), "error")
                 return redirect(url_for("registry_catalog", rid=rid))
             success, output = delete_image(reg, repo, tag)
             if success:
-                flash(f"已删除 {repo}:{tag}", "success")
+                flash(_("Deleted %(repo)s:%(tag)s", repo=repo, tag=tag), "success")
             else:
-                flash(f"删除 {repo}:{tag} 失败：{output}", "error")
+                flash(_("Failed to delete %(repo)s:%(tag)s: %(output)s", repo=repo, tag=tag, output=output), "error")
     except Exception as e:
         flash(str(e), "error")
 
@@ -1163,7 +1169,7 @@ def copy_create():
         registry_id = 0
     reg = registries.get(registry_id)
     if reg is None:
-        flash("请选择一个有效的目标 Registry", "error")
+        flash(_("Please select a valid target Registry"), "error")
         return redirect(url_for("dashboard"))
 
     source = (request.form.get("source_image") or "").strip()
@@ -1171,10 +1177,10 @@ def copy_create():
     multi_arch = request.form.get("multi_arch") in ("1", "on", "true", "yes")
     source_type = (request.form.get("source_type") or "docker").strip()
     if source_type not in ("docker", "docker-daemon"):
-        flash(f"不支持的源类型：{source_type}", "error")
+        flash(_("Unsupported source type: %(t)s", t=source_type), "error")
         return redirect(url_for("dashboard"))
     if not source or not dest:
-        flash("源镜像和目标镜像不能为空", "error")
+        flash(_("Source and destination images cannot be empty"), "error")
         return redirect(url_for("dashboard"))
 
     task = CopyTask(
@@ -1191,7 +1197,7 @@ def copy_create():
 
     _ensure_worker()
     task_queue.put(task.id)
-    flash(f"任务 #{task.id} 已加入队列", "success")
+    flash(_("Task #%(id)s queued", id=task.id), "success")
     return redirect(url_for("task_detail", task_id=task.id))
 
 
@@ -1200,7 +1206,7 @@ def copy_create():
 def task_detail(task_id: int):
     task = db.session.get(CopyTask, task_id)
     if task is None or task.user_id != current_user.id:
-        flash("任务不存在", "error")
+        flash(_("Task does not exist"), "error")
         return redirect(url_for("dashboard"))
     response = make_response(render_template(
         "task.html",
@@ -1216,13 +1222,13 @@ def task_detail(task_id: int):
 def task_retry(task_id: int):
     task = db.session.get(CopyTask, task_id)
     if task is None or task.user_id != current_user.id:
-        flash("任务不存在", "error")
+        flash(_("Task does not exist"), "error")
         return redirect(url_for("dashboard"))
     if task.status in ("pending", "running"):
-        flash("任务正在排队或运行中，无需重试", "error")
+        flash(_("Task is queued or running, no retry needed"), "error")
         return redirect(url_for("task_detail", task_id=task.id))
     if task.status not in ("success", "failed"):
-        flash("当前状态不允许重试", "error")
+        flash(_("Current status does not allow retry"), "error")
         return redirect(url_for("task_detail", task_id=task.id))
 
     # 重置后重新入队；保留 created_at 以便追溯首次提交时间
@@ -1237,7 +1243,7 @@ def task_retry(task_id: int):
 
     _ensure_worker()
     task_queue.put(task.id)
-    flash(f"任务 #{task.id} 已重新加入队列", "success")
+    flash(_("Task #%(id)s re-queued", id=task.id), "success")
     return redirect(url_for("task_detail", task_id=task.id))
 
 
@@ -1246,15 +1252,15 @@ def task_retry(task_id: int):
 def task_delete(task_id: int):
     task = db.session.get(CopyTask, task_id)
     if task is None or task.user_id != current_user.id:
-        flash("任务不存在", "error")
+        flash(_("Task does not exist"), "error")
         return redirect(url_for("dashboard"))
     if task.status in ("pending", "running"):
-        flash("任务正在排队或运行中，不能删除", "error")
+        flash(_("Task is queued or running, cannot be deleted"), "error")
         return redirect(url_for("task_detail", task_id=task.id))
 
     db.session.delete(task)
     db.session.commit()
-    flash(f"任务 #{task_id} 已删除", "success")
+    flash(_("Task #%(id)s deleted", id=task_id), "success")
 
     # 任务已删，回详情页会触发「任务不存在」——统一回 dashboard
     return redirect(url_for("dashboard"))
@@ -1335,12 +1341,58 @@ def inject_globals():
         "current_year": datetime.utcnow().year,
         "default_project": DEFAULT_PROJECT,
         "project_dest": _project_dest,
+        "_": _,
+        "get_locale": get_locale,
+        "supported_locales": SUPPORTED_LOCALES,
     }
+
+
+@app.before_request
+def _set_locale() -> None:
+    """Populate g.locale from ?lang=, cookie, or default."""
+    g.locale = resolve_locale_from_request()
+
+
+@app.after_request
+def _persist_locale(response):
+    """If ?lang= overrode the locale, persist via cookie so subsequent requests stick."""
+    qp = request.args.get("lang", "").strip().lower() if request else ""
+    if qp in SUPPORTED_LOCALES:
+        existing = request.cookies.get(LOCALE_COOKIE, "")
+        if existing != qp:
+            response.set_cookie(
+                LOCALE_COOKIE,
+                qp,
+                max_age=LOCALE_COOKIE_MAX_AGE,
+                samesite="Lax",
+                httponly=False,
+            )
+    return response
+
+
+@app.route("/lang/<code>")
+def set_lang(code: str):
+    """Explicit language switch endpoint. Sets cookie and redirects back."""
+    code = (code or "").strip().lower()
+    nxt = request.args.get("next") or request.referrer or url_for("dashboard")
+    # 防 open-redirect：只允许相对路径或同源 path
+    if not nxt.startswith("/"):
+        nxt = url_for("dashboard")
+    resp = redirect(nxt)
+    if code in SUPPORTED_LOCALES:
+        resp.set_cookie(
+            LOCALE_COOKIE,
+            code,
+            max_age=LOCALE_COOKIE_MAX_AGE,
+            samesite="Lax",
+            httponly=False,
+        )
+    return resp
 
 
 @app.errorhandler(404)
 def not_found(_e):
-    return render_template("error.html", code=404, message="页面不存在"), 404
+    return render_template("error.html", code=404, message=_("Page not found")), 404
 
 
 # ---------------------------------------------------------------------------
