@@ -156,9 +156,6 @@ class CopyTask(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     registry_id = db.Column(db.Integer, db.ForeignKey("registries.id"), nullable=False)
     source_image = db.Column(db.String(300), nullable=False)
-    # 历史遗留字段：skopeo 时代用于区分 "docker" / "docker-daemon"。
-    # 当前实现统一走 docker CLI（自动 pull），不再读这个值；保留仅为兼容老 DB 行。
-    source_type = db.Column(db.String(20), default="docker", nullable=False)
     dest_image = db.Column(db.String(300), nullable=False)
     status = db.Column(db.String(20), default="pending", nullable=False)
     log = db.Column(db.Text, default="", nullable=False)
@@ -365,12 +362,23 @@ def _migrate_columns() -> None:
     stmts = [
         "ALTER TABLE copy_tasks ADD COLUMN heartbeat_at DATETIME",
         "ALTER TABLE copy_tasks ADD COLUMN subprocess_pid INTEGER",
-        "ALTER TABLE copy_tasks ADD COLUMN source_type VARCHAR(20) DEFAULT 'docker' NOT NULL",
         "ALTER TABLE copy_tasks ADD COLUMN retry_times INTEGER DEFAULT 3 NOT NULL",
         "ALTER TABLE copy_tasks ADD COLUMN cleanup BOOLEAN DEFAULT 1 NOT NULL",
     ]
+    # 清理历史遗留列：source_type 在合并 source 类型后已无任何代码读取。
+    # SQLite ≥ 3.35.0（2021-03）支持 DROP COLUMN；旧版本会抛错，被 try/except 吞掉，
+    # 不影响启动 —— 老库只是多一列没人用的脏数据。
+    drop_stmts = [
+        "ALTER TABLE copy_tasks DROP COLUMN source_type",
+    ]
     with app.app_context():
         for sql in stmts:
+            try:
+                db.session.execute(text(sql))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+        for sql in drop_stmts:
             try:
                 db.session.execute(text(sql))
                 db.session.commit()
