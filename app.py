@@ -95,6 +95,9 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", os.urandom(32).hex())
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["WTF_CSRF_TIME_LIMIT"] = 60 * 60 * 8
+# 私有部署工具：让浏览器不要缓存静态文件，方便改 CSS/JS 后直接刷新就能看到效果。
+# 生产里反代/CDN 一般会再加自己的 cache header，这条只影响 Flask 自带的 send_file。
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -263,16 +266,16 @@ class CopyForm(FlaskForm):
         description=_l("e.g. nginx:1.27 (only image:tag; project is auto-appended by the selected Registry)"),
     )
     multi_arch = BooleanField(
-        _l("Multi-arch (--multi-arch all)"),
-        description=_l("Push the full manifest list (amd64 / arm64 / armv7, etc). Recommended when pushing multi-arch images like nginx from an ARM Mac."),
+        _l("Multi-arch"),
+        description=_l("Push the full multi-arch manifest list (amd64 / arm64 / armv7)."),
     )
     # --retry-times N：传给 skopeo copy，网络/registry 抖动时自动重试。
     # skopeo 自身默认就是 3；这里默认 3 保持一致，0 表示不重试。
     retry_times = IntegerField(
-        _l("Retry times (--retry-times)"),
+        _l("Retry times"),
         default=3,
         validators=[NumberRange(min=0, max=10)],
-        description=_l("How many times skopeo retries on transient errors (network blip, registry 5xx, etc). 0 disables retries; max 10. Default 3 matches skopeo's own default."),
+        description=_l("Skopeo retry count on transient errors. 0 = no retries; max 10; default 3."),
     )
     submit = SubmitField(_l("Start Copy"))
 

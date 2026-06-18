@@ -155,6 +155,8 @@ form small { display: block; color: var(--muted); margin-top: 0.2rem; font-size:
 
 input[type="text"],
 input[type="password"],
+input[type="number"],
+input[type="email"],
 select,
 textarea {
   width: 100%;
@@ -164,6 +166,7 @@ textarea {
   background: #fff;
   font-size: 0.95rem;
   font-family: inherit;
+  color: var(--text, #1f2937);
 }
 input:focus, select:focus, textarea:focus {
   outline: none;
@@ -196,6 +199,53 @@ input:focus, select:focus, textarea:focus {
 .form-grid small.hint {
   margin-top: -0.25rem;
   color: var(--muted);
+}
+
+/* Options row: a horizontal pill that bundles the two skopeo flag controls.
+   inline-flex + nowrap on the children ensures the labels never wrap,
+   even when the form column is narrow. The row shrinks to fit its
+   content; max-width caps it at the parent column so it can't overflow. */
+.options-row {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1.5rem;
+  max-width: 100%;
+  padding: 0.7rem 1rem;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.options-row > .checkbox,
+.options-row > .opt-num {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  margin: 0;
+  font-weight: 500;
+}
+.options-row > .opt-num {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.options-row > .opt-num input[type="number"] {
+  width: 5rem;
+}
+.options-row code,
+code.flag {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
+  color: #475569;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 7px;
+  margin: 0 0.25rem;
+  line-height: 1.5;
 }
 
 .btn {
