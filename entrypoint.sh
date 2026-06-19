@@ -17,6 +17,18 @@ set -eu
 mkdir -p /app/instance
 chown -R app:app /app/instance
 
+# 运行时设置系统时区：docker-compose 传入的 TZ 会覆盖 Dockerfile 烘焙的默认值。
+# 既要让 /etc/localtime 指向正确的 zoneinfo（子进程 date / docker CLI 等会读），
+# 也让 TZ 环境变量透传给 python —— entrypoint 不调 tzset，glibc 在 exec 时
+# 会自己读取 TZ，所以只要保证这里 export 即可。
+if [ -n "${TZ:-}" ] && [ -f "/usr/share/zoneinfo/$TZ" ]; then
+    ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
+    echo "$TZ" > /etc/timezone
+    export TZ
+elif [ -n "${TZ:-}" ]; then
+    echo "warning: TZ='$TZ' not found in /usr/share/zoneinfo, keeping system default" >&2
+fi
+
 # 适配宿主机 docker socket 的 GID：起一个同名 group 把 app 加进去。
 # 没有挂 socket（DOCKER_HOST=tcp://...）就跳过。
 if [ -S /var/run/docker.sock ]; then

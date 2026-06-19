@@ -39,6 +39,11 @@ services:
     # group_add:
     #   - "999"
     environment:
+      # 容器时区：覆盖 Dockerfile 烘焙的默认值。优先级：
+      #   1. 宿主 shell / .env 里的 TZ 环境变量（最高，可设为 Europe/Paris 等）
+      #   2. compose 文件里写死的默认 Asia/Shanghai
+      # 镜像里已经装了 tzdata，所以任何 IANA 时区名都能用。
+      TZ: ${TZ:-Asia/Shanghai}
       # 自定义 session 密钥；不设则每次启动随机（重启后旧 session 失效）
       SECRET_KEY: "change-me-in-prod"
       # 新建 Registry 时 project 字段的默认值
