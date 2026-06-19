@@ -117,7 +117,7 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
 
     def set_password(self, password: str) -> None:
         self.password_hash = generate_password_hash(password)
@@ -140,7 +140,7 @@ class Registry(db.Model):
     # 例如 project="docker-proxy"，目标镜像 nginx:1.27 → docker-proxy/nginx:1.27。
     # 留空则不追加。建表时由 DEFAULT_PROJECT 提供初始值。
     project = db.Column(db.String(120), default=DEFAULT_PROJECT, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
 
     def set_password(self, password: str) -> None:
         self.password_enc = FERNET.encrypt(password.encode()).decode()
@@ -165,7 +165,7 @@ class CopyTask(db.Model):
     # 默认 True —— 大多数场景是「拉 → 推 → 清」的临时操作。
     # 取消勾选则保留本地镜像，适合「我自己 build 的镜像只想顺便推一份到远端」。
     cleanup = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
     # 看门狗用：worker 每次落库都刷新 heartbeat_at；watchdog 据此判断 worker/docker
@@ -378,7 +378,7 @@ def _recover_unfinished_tasks() -> None:
     running 和 pending 的行全部置为 failed，错误信息区分两种来源。
     """
     with app.app_context():
-        now = datetime.utcnow()
+        now = datetime.now()
         # running：上一次会话跑到一半没跑完
         running = CopyTask.query.filter(CopyTask.status == "running").all()
         for task in running:
@@ -728,7 +728,7 @@ def _run_step(task: CopyTask, args: list[str], log_lines: list[str]) -> int:
         return -1
 
     task.subprocess_pid = proc.pid
-    task.heartbeat_at = datetime.utcnow()
+    task.heartbeat_at = datetime.now()
     db.session.commit()
 
     assert proc.stdout is not None
@@ -745,7 +745,7 @@ def _run_step(task: CopyTask, args: list[str], log_lines: list[str]) -> int:
             break
         # 任何字节都算子进程还在干活，立刻更新心跳（仅 in-memory，
         # 落库交给下面 1.5s 节流 + ticker 共同保证，避免狂 commit）
-        task.heartbeat_at = datetime.utcnow()
+        task.heartbeat_at = datetime.now()
         buf += chunk
         while b"\n" in buf:
             nl_idx = buf.index(b"\n")
@@ -781,8 +781,8 @@ def _run_task(task_id: int) -> None:
             return
 
         task.status = "running"
-        task.started_at = datetime.utcnow()
-        task.heartbeat_at = datetime.utcnow()
+        task.started_at = datetime.now()
+        task.heartbeat_at = datetime.now()
         db.session.commit()
 
         # 预检：必备外部命令
@@ -792,7 +792,7 @@ def _run_task(task_id: int) -> None:
                 "docker command not found. Install Docker (or set DOCKER_HOST to a "
                 "remote daemon) and retry."
             )
-            task.finished_at = datetime.utcnow()
+            task.finished_at = datetime.now()
             db.session.commit()
             return
 
@@ -844,7 +844,7 @@ def _run_task(task_id: int) -> None:
 
             task.subprocess_pid = None
             task.return_code = main_rc
-            task.finished_at = datetime.utcnow()
+            task.finished_at = datetime.now()
             if early_aborted:
                 # 错误信息已在 _run_step 输出里写明（log_lines 已落库）；
                 # 这里只保留简短 summary。
@@ -859,7 +859,7 @@ def _run_task(task_id: int) -> None:
         except Exception as e:  # pragma: no cover
             task.status = "failed"
             task.error = f"Execution error: {e}"
-            task.finished_at = datetime.utcnow()
+            task.finished_at = datetime.now()
         finally:
             stop_ticker.set()
             _flush_task_log(task, log_lines)
@@ -885,7 +885,7 @@ def _heartbeat_ticker(task_id: int, stop: threading.Event) -> None:
                 with app.app_context():
                     t = db.session.get(CopyTask, task_id)
                     if t is not None and t.status == "running":
-                        t.heartbeat_at = datetime.utcnow()
+                        t.heartbeat_at = datetime.now()
                         db.session.commit()
             except Exception:
                 # SQLite 锁、session 冲突等都吞掉 —— ticker 不能影响主线程
@@ -916,7 +916,7 @@ def _check_hung_tasks() -> None:
     heartbeat_at 就会停在过去；超时后这条路径负责善后。
     """
     with app.app_context():
-        threshold = datetime.utcnow() - timedelta(seconds=HEARTBEAT_TIMEOUT_SEC)
+        threshold = datetime.now() - timedelta(seconds=HEARTBEAT_TIMEOUT_SEC)
         stale = CopyTask.query.filter(
             CopyTask.status == "running",
             CopyTask.heartbeat_at.isnot(None),
@@ -924,7 +924,7 @@ def _check_hung_tasks() -> None:
         ).all()
         if not stale:
             return
-        now = datetime.utcnow()
+        now = datetime.now()
         for task in stale:
             task.status = "failed"
             task.error = (
@@ -1490,7 +1490,7 @@ def tasks_recent():
 @app.context_processor
 def inject_globals():
     return {
-        "current_year": datetime.utcnow().year,
+        "current_year": datetime.now().year,
         "default_project": DEFAULT_PROJECT,
         "project_dest": _project_dest,
         "_": _,
